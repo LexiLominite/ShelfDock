@@ -1,0 +1,13 @@
+node_modules/
+dist/
+release/
+test-results/
+playwright-report/
+.DS_Store
+
+# Private presets and local credentials never belong in the clean repository.
+personal-config.json
+.env*
+*.pem
+*.key
+SHA256SUMS.txt

@@ -1,0 +1,64 @@
+{
+  "name": "lex-drift",
+  "productName": "lex-drift",
+  "version": "0.2.0",
+  "description": "Shake to collect. Drop onto a machine to send.",
+  "author": "LexiLominite",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "desktopName": "com.lexilominite.lex-drift.desktop",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "test": "node --test tests/*.test.cjs",
+    "package:mac": "npm run build && electron-builder --mac zip --arm64 --publish never",
+    "package:win": "npm run build && electron-builder --win portable --x64 --publish never",
+    "package:linux": "npm run build && electron-builder --linux tar.gz --x64 --publish never",
+    "package:linux-arm": "npm run build && electron-builder --linux tar.gz --arm64 --publish never"
+  },
+  "dependencies": {
+    "lucide-react": "1.48.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3",
+    "vite": "8.3.1"
+  },
+  "build": {
+    "appId": "com.lexilominite.lex-drift",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "win": {
+      "target": "portable",
+      "executableName": "lex-drift",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "category": "Utility",
+      "target": "tar.gz",
+      "executableName": "lex-drift"
+    },
+    "artifactName": "lex-drift-${version}-${os}-${arch}.${ext}",
+    "icon": "desktop/assets/icon.png",
+    "npmRebuild": false
+  },
+  "license": "UNLICENSED"
+}

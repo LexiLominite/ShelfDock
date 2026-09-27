@@ -1,0 +1,29 @@
+{
+  "schema": "lex-drift-config",
+  "version": 1,
+  "hosts": [
+    {
+      "name": "My laptop \u2014 LAN",
+      "address": "my-laptop.local",
+      "user": "your-user",
+      "port": 22,
+      "destination": "~/Desktop",
+      "route": "lan",
+      "os": "posix"
+    },
+    {
+      "name": "My workstation \u2014 Tailscale",
+      "address": "100.64.1.20",
+      "user": "your-user",
+      "port": 22,
+      "destination": "~/Desktop",
+      "route": "tailscale",
+      "os": "posix"
+    }
+  ],
+  "settings": {
+    "shakeEnabled": true,
+    "sensitivity": "normal",
+    "viewMode": "expanded"
+  }
+}

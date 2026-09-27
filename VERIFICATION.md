@@ -1,0 +1,15 @@
+# lex-drift v0.2.0 verification
+
+Verified locally on macOS on September 27, 2026.
+
+- All 81 automated tests passed, including host discovery/trust, exact drop payloads, transfer collisions and failures, clipboard text/file/image handling, shelf serialization/storage failures, atomic config import/rollback, upgrade migration, all view preferences, gesture toggle/controller behavior, and shared worker exclusivity.
+- Production renderer built successfully. Dependencies reported no known vulnerabilities in the checked npm audit.
+- Native macOS clipboard samples succeeded for plain UTF-8 text, a copied local file, and a PNG image. The original clipboard was restored, and capture did not start a transfer.
+- Native macOS application opened with the renamed product, clipboard controls, configuration controls, and view settings before the user requested all further testing remain in the background. Old/test app instances were stopped at that request.
+- Background controller tests confirm no window show/focus, always-on-top, tray, shortcut, cursor polling, or error popup during silent tests. Shared worker tests elected one primary during 20 concurrent launches, verified silent secondary launches and real child-process crash recovery.
+- Gesture tests exercise the actual controller: first shake reveals without taking focus, cooldown prevents flicker, later shake hides, dragging/editing protects the target, and shortcut/tray can toggle.
+- Earlier live file/folder/Unicode text transfers succeeded to Linux and macOS receivers over Tailscale. Received contents matched, including filenames with spaces and apostrophes; a native mouse drop sent exactly its intended note. Temporary verification destinations were removed.
+- Personal preset export contains 15 configured machine routes without SSH keys, passwords, local key paths, clipboard contents, shelf files, or receipts. The clean edition contains no personal preset.
+- Grok CLI completed a source-only read-only review; substantiated findings were fixed and regression-tested. See GROK_REVIEW.md.
+
+macOS ARM64 packages are locally exercised. Windows x64 and Linux x64/ARM64 packages are cross-built and still need native device validation. Windows receiving has simulated function/security tests, not a live server test. Cursor gestures are unavailable on Wayland; shortcut/tray access is the fallback. These are unsigned prerelease desktop packages, not mobile apps or a signed public release. Both GitHub repositories remain private during testing.
