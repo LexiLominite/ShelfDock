@@ -32,17 +32,15 @@ Added: `--font-mono`, a shared system-monospace stack for hostnames, endpoints, 
 
 ## Verification
 
-Final layout verification is pending: the narrow Balanced clipboard preview threshold was increased from 470px to 620px after the last successful renderer build. Grok's automatic approval review blocked the subsequent build-wrapper execution before compilation. The headless results and after screenshots below describe the preceding build; the added minimum-history-height assertion must be run against a fresh build before this PR is marked ready. Approval for a direct local renderer build has been requested.
-
 On 28 September 2026:
 
 - 175 Node tests passed, including the native controller, browser-opening validation, URL parsing, endpoint safeguards, shared forwarding-operation races, clipboard, configuration, shelf Undo and singleton behavior.
 - Headless machine/quick-connect tests passed for all densities, keyboard/context-menu access, reduced motion, exact URL-to-forward mapping, URL drop isolation, saved repeat, Remote semantics, failures, Stop during startup, independent per-host drafts, multiple-live-forward access, shelf Undo and batch sending.
 - Eight Clipboard browser groups passed: three density/layout checks, workspace-state persistence, keyboard/copy/pin/focus behavior, global clear scope, stale-detail isolation, and opt-in/editing status.
 - The actual new URL bar was exercised against a trusted POSIX host over Tailscale with the production SSH TunnelManager. Go returned the expected nonce from an owned in-memory HTTP fixture; Stop closed the listener; one-click saved repeat returned a second verified response; final Stop and cleanup closed the remote fixture, local listener and owned SSH processes. The browser-opening adapter fetched the validated address instead of creating an OS browser window.
-- Grok 4.7 reviewed the design and performed the renderer compilation through an exact-command build wrapper. Response metadata identified `grok-4.7-build`.
+- Grok 4.7 reviewed the design and performed earlier renderer compilations. Response metadata identified `grok-4.7-build`. After its final wrapper execution was blocked, the user authorized a direct local build; that fresh build, the added Balanced history-height check, and refreshed screenshots all passed.
 
-Native Windows/Linux desktop execution and an actual OS browser launch were not performed in this pass. Browser-launch validation and dispatch were covered with inert native tests. No installed desktop app or release artifact was replaced by this PR.
+Native Windows/Linux desktop execution and an actual OS browser launch were not performed in this pass. Browser-launch validation and dispatch were covered with inert native tests. Package and installation verification for v0.4.0 is recorded separately in VERIFICATION.md.
 
 Reproduce automated checks with Node 22.12+:
 

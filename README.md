@@ -42,7 +42,7 @@ Select shelf items and tick the target machines, then review **Send N items to M
 
 ## View modes and portable configuration
 
-Settings provides **Compact**, **Expanded**, and **Large** views. The app resizes to the available screen space and remembers your choice.
+The visible **View** selector and Settings provide **Compact**, **Balanced** (default), and **Expanded** views. Compact uses dense rows; Balanced keeps everyday actions visible; Expanded adds inline forwarding controls and recent transfer receipts. The app resizes to the available screen space and remembers your choice. Existing Expanded/Large preferences map to Balanced/Expanded without changing the configuration format.
 
 Use **Settings → Export configuration** to save a versioned `DropHarbor-config.json`, then **Import configuration** on another device. See [the example file](config/lex-drift-config.example.json). Import validates the entire file before applying it, merges endpoints instead of deleting existing machines, and preserves local authentication only for an exact address/username/port match. Imported hosts need a fresh SSH check.
 
@@ -125,8 +125,8 @@ Clear shelf offers a 10-second Undo, restoring the exact cleared items alongside
 
 ## Port forwarding
 
-Right-click a machine or choose its Connections button. Choose **Local →** to listen on this device and reach a destination through that SSH machine, or **Remote ←** to listen on the SSH machine and reach a destination through this device. Enter a destination hostname/IP, its port, and the listening port, then choose Start. For example, Local with destination `localhost:3000` and listening port `8080` makes the remote service available at `127.0.0.1:8080` on this device.
+Choose the globe on a machine and enter a URL such as `http://localhost:1331`, then choose **Go**. A saved website reopens with one click on that globe. **Advanced** reveals Local/Remote direction and destination/listening ports; Expanded view keeps those controls visible. Local listens on this device and reaches the URL through the SSH machine. Remote listens on the SSH machine and reaches the destination through this device. Local live websites can open in your browser; Remote forwards do not open as local sites. A live chip on the machine stops that connection. Right-click or the three-dot menu retains advanced setup, history, access, editing and removal.
 
-Connections shows starting/running/failed status, the owned OpenSSH process ID where applicable, and Stop. Save a plan to History to repeat it later; each saved plan can have a note. Plans never restart automatically. Editing a machine's endpoint invalidates an old plan until you review a new one. Quitting closes the app's own tunnels.
+Go reports Forwarding or Live inline. Connections shows starting/running/failed status, the owned OpenSSH process ID where applicable, and Stop. Save a plan to History to repeat it later; each saved plan can have a note. Plans never restart automatically. Website scheme and pathname are remembered locally for saved plans; query strings and fragments are not persisted. These website preferences are currently excluded from configuration exports. HTTPS sites still need certificates and routing that work at the forwarded local address. Editing a machine's endpoint invalidates an old plan until you review a new one. Quitting closes the app's own tunnels.
 
 Listeners bind to loopback. Remote forwarding verifies the actual remote listener before reporting Running, because SSH GatewayPorts settings can override requested bindings. Remote machines need `ss`, `lsof`, or Windows `Get-NetTCPConnection` for that check. An SSH alias with existing forwarding rules is refused to prevent opening additional ports unintentionally. Existing trusted key access and encrypted saved-password access are supported. Running means the SSH tunnel/listener is established; the destination service must also be available when used.
