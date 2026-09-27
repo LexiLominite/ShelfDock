@@ -1,6 +1,6 @@
 # Public release preparation
 
-The clean `LexiLominite/lex-drift` repository is currently private for testing. The separate `lex-drift-personal` repository, route preset, and personalized release assets should remain private.
+The clean `LexiLominite/DropHarbor` repository is currently private for testing. The separate `lex-drift-personal` repository, route preset, and personalized release assets should remain private.
 
 Before making the clean edition public:
 

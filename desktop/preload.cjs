@@ -7,6 +7,7 @@ const subscribe = (channel, callback) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 contextBridge.exposeInMainWorld('drift', {
+  productName: process.argv.includes('--lex-drift-product-name=lex-drift') ? 'lex-drift' : 'DropHarbor',
   getState: () => invoke('getState'),
   refreshHosts: () => invoke('refreshHosts'),
   probeHosts: () => invoke('probeHosts'),

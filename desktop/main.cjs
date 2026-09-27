@@ -10,6 +10,8 @@ const { createConfig, importConfiguration } = require('./config.cjs');
 const { migrateLegacyData } = require('./migrate.cjs');
 const { acquireWorker } = require('./worker.cjs');
 
+const { productName = 'DropHarbor' } = require('../package.json');
+// Retain the existing data directory and singleton identity across editions.
 app.setName('lex-drift');
 if (process.env.LEX_DRIFT_DATA_DIR || process.env.DRIFT_DATA_DIR) app.setPath('userData', process.env.LEX_DRIFT_DATA_DIR || process.env.DRIFT_DATA_DIR);
 const backgroundTest = process.env.LEX_DRIFT_BACKGROUND_TEST === '1';
@@ -33,7 +35,7 @@ function publish(state) {
   if (runtimeSettings.viewMode !== state.settings.viewMode) resizeForMode(state.settings.viewMode);
   runtimeSettings = state.settings;
   if (window && !window.isDestroyed()) window.webContents.send('drift:state', decorate(state));
-  if (tray) tray.setToolTip(`lex-drift — ${state.items.length} held item${state.items.length === 1 ? '' : 's'}`);
+  if (tray) tray.setToolTip(`${productName} — ${state.items.length} held item${state.items.length === 1 ? '' : 's'}`);
 }
 function reveal(reason = 'manual') {
   if (backgroundTest) return;
@@ -79,7 +81,7 @@ function safeHandler(method, fn) {
   ipcMain.handle(`drift:${method}`, async (event, ...args) => {
     // Native capabilities are callable only by our packaged local window.
     if (!window || event.sender !== window.webContents || event.senderFrame?.url !== entryURL) {
-      throw new Error('This request did not come from lex-drift.');
+      throw new Error(`This request did not come from ${productName}.`);
     }
     if (service?.configurationImport && !['getState', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
     return fn(...args);
@@ -117,11 +119,12 @@ if (singleton) app.whenReady().then(async () => {
   detector.setSensitivity(initial.settings.sensitivity);
   window = new BrowserWindow({
     width: 840, height: 680, minWidth: 650, minHeight: 540,
-    frame: false, show: false, alwaysOnTop: !backgroundTest, backgroundColor: '#E8EBF6',
-    title: 'lex-drift', autoHideMenuBar: true, roundedCorners: true,
+    frame: false, show: false, alwaysOnTop: !backgroundTest, backgroundColor: '#02161A',
+    title: productName, autoHideMenuBar: true, roundedCorners: true,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
+      additionalArguments: [`--lex-drift-product-name=${productName}`],
       contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, spellcheck: false,
     },
@@ -137,7 +140,7 @@ if (singleton) app.whenReady().then(async () => {
   }
   safeHandler('pickFiles', async () => {
     const selection = await dialog.showOpenDialog(window, {
-      title: 'Add files to lex-drift', properties: ['openFile', 'openDirectory', 'multiSelections'],
+      title: `Add files to ${productName}`, properties: ['openFile', 'openDirectory', 'multiSelections'],
     });
     return decorate(selection.canceled ? await service.getState() : await service.enqueueFiles(selection.filePaths));
   });
@@ -146,14 +149,14 @@ if (singleton) app.whenReady().then(async () => {
   });
   safeHandler('captureClipboard', async () => decorate(await captureClipboard({ clipboard, service })));
   safeHandler('exportConfig', async () => {
-    const file = await dialog.showSaveDialog(window, { title: 'Export lex-drift configuration', defaultPath: 'lex-drift-config.json', filters: [{ name: 'Configuration', extensions: ['json'] }] });
+    const file = await dialog.showSaveDialog(window, { title: `Export ${productName} configuration`, defaultPath: `${productName}-config.json`, filters: [{ name: 'Configuration', extensions: ['json'] }] });
     if (file.canceled || !file.filePath) return null;
     const config = createConfig(await service.getState());
     await fs.writeFile(file.filePath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
     return { filePath: file.filePath };
   });
   safeHandler('importConfig', async () => {
-    const selection = await dialog.showOpenDialog(window, { title: 'Import lex-drift configuration', properties: ['openFile'], filters: [{ name: 'Configuration', extensions: ['json'] }] });
+    const selection = await dialog.showOpenDialog(window, { title: `Import ${productName} configuration`, properties: ['openFile'], filters: [{ name: 'Configuration', extensions: ['json'] }] });
     if (selection.canceled || !selection.filePaths.length) return null;
     const file = selection.filePaths[0];
     const info = await fs.stat(file);
@@ -170,16 +173,16 @@ if (singleton) app.whenReady().then(async () => {
   if (!backgroundTest) {
   tray = new Tray(trayIcon);
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Show lex-drift', click: () => reveal('tray') },
+    { label: `Show ${productName}`, click: () => reveal('tray') },
     { label: 'Refresh machines', click: () => { if (service.configurationImport) return; service.refreshHosts().then(() => service.configurationImport ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
     { type: 'separator' },
-    { label: 'Quit lex-drift', click: () => { quitting = true; app.quit(); } },
+    { label: `Quit ${productName}`, click: () => { quitting = true; app.quit(); } },
   ]));
   tray.on('click', () => toggleShelf('tray'));
   }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: 'lex-drift', submenu: [
-      { label: 'Show lex-drift', click: () => reveal() },
+    { label: productName, submenu: [
+      { label: `Show ${productName}`, click: () => reveal() },
       { type: 'separator' }, { role: 'quit' },
     ] },
     { role: 'editMenu' },
@@ -204,7 +207,7 @@ if (singleton) app.whenReady().then(async () => {
   }, 90000);
 }).catch(error => {
   console.error(error);
-  if (!backgroundTest) dialog.showErrorBox('lex-drift could not start', error.message);
+  if (!backgroundTest) dialog.showErrorBox(`${productName} could not start`, error.message);
   quitting = true;
   app.quit();
 });

@@ -1,7 +1,7 @@
 {
-  "name": "lex-drift",
-  "productName": "lex-drift",
-  "version": "0.2.1",
+  "name": "dropharbor",
+  "productName": "DropHarbor",
+  "version": "0.2.2",
   "description": "Shake to collect. Drop onto a machine to send.",
   "author": "LexiLominite",
   "private": true,
@@ -44,7 +44,7 @@
     },
     "win": {
       "target": "portable",
-      "executableName": "lex-drift",
+      "executableName": "DropHarbor",
       "signAndEditExecutable": false
     },
     "nsis": {
@@ -54,9 +54,9 @@
     "linux": {
       "category": "Utility",
       "target": "tar.gz",
-      "executableName": "lex-drift"
+      "executableName": "DropHarbor"
     },
-    "artifactName": "lex-drift-${version}-${os}-${arch}.${ext}",
+    "artifactName": "DropHarbor-${version}-${os}-${arch}.${ext}",
     "icon": "desktop/assets/icon.png",
     "npmRebuild": false
   },

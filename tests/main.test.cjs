@@ -81,6 +81,7 @@ async function controller(options = {}) {
   }
   let workerOptions;
   const modules = {
+    '../package.json': { productName: options.productName || 'DropHarbor' },
     electron,
     'node:path': path,
     'node:url': { pathToFileURL },
@@ -196,4 +197,18 @@ test('Electron single-instance denial cannot create a second worker or user inte
   const c = await controller({ singleton: false });
   assert.equal(c.windows.length, 0); assert.equal(c.trays.length, 0); assert.equal(c.timers.length, 0);
   assert.equal(c.calls.some(call => call.type === 'workerAcquire'), false); assert.ok(c.calls.some(call => call.type === 'quit'));
+});
+
+test('edition branding preserves the shared worker and existing data identity', async () => {
+  let sharedRuntime;
+  for (const productName of ['DropHarbor', 'lex-drift']) {
+    const c = await controller({ productName, argv: ['--background'] });
+    assert.equal(c.errors.length, 0);
+    assert.equal(c.windows[0].options.title, productName);
+    assert.equal(c.windows[0].options.webPreferences.additionalArguments[0], `--lex-drift-product-name=${productName}`);
+    assert.equal(c.trays[0].menu[0].label, `Show ${productName}`);
+    assert.ok(c.calls.some(call => call.type === 'setName' && call.values[0] === 'lex-drift'));
+    if (sharedRuntime) assert.equal(c.workerOptions.runtimeDir, sharedRuntime);
+    sharedRuntime = c.workerOptions.runtimeDir;
+  }
 });
