@@ -7,7 +7,7 @@ const SCHEMA = 'lex-drift-config';
 const VERSION = 1;
 const MAX_BYTES = 1024 * 1024;
 const MAX_HOSTS = 500;
-const SETTINGS_DEFAULTS = Object.freeze({ shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' });
+const SETTINGS_DEFAULTS = Object.freeze({ shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' });
 const HOST_FIELDS = ['name', 'address', 'user', 'port', 'destination', 'route', 'os'];
 const clone = value => JSON.parse(JSON.stringify(value));
 const endpoint = host => `${host.address.toLowerCase()}\0${host.user}\0${host.port}`;
@@ -84,6 +84,8 @@ async function importConfiguration(service, input) {
   const config = validateConfig(input);
   await service.initialized;
   if (service.configurationImport) throw new Error('Wait for the current configuration import to finish.');
+  if (service.tunnelSetup) throw new Error('Wait for forwarding setup to finish before importing settings.');
+  if (service.authenticationSetup) throw new Error('Wait for connection setup to finish before importing settings.');
   if (service.transferring) throw new Error('Wait for the current transfer to finish before importing settings.');
   service.configurationImport = true;
   try {

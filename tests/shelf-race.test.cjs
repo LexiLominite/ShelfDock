@@ -99,7 +99,8 @@ test('failed shelf removal persistence retains the shelf entry and staged file',
   assert.equal((await service.getState()).items[0].id, item.id);
   assert.deepEqual(await fs.readFile(item.path), PNG);
   service.persist = persist;
-  await service.clearItems(); await assert.rejects(fs.stat(item.path), { code: 'ENOENT' });
+  await service.clearItems(); await fs.access(item.path);
+  service.clock = () => Date.now() + 10001; await service.expireClearUndo(); await assert.rejects(fs.stat(item.path), { code: 'ENOENT' });
 });
 
 for (const failImageCommit of [false, true]) test(`configuration import waits for an image commit${failImageCommit ? ' and its failure cleanup' : ''} before merging`, async t => {

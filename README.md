@@ -10,11 +10,35 @@ DropHarbor is a desktop shelf for files, folders, and text. A deliberate, fast b
 
 1. Open DropHarbor and let the first SSH check finish.
 2. Shake the cursor quickly back and forth, or use **Command/Ctrl + Shift + Space**. The shortcut and menu-bar/tray icon also toggle the shelf.
-3. Drop a file, folder, or selected text into the shelf. Use **Paste from clipboard** or **Command/Ctrl + V** to add plain text, a copied screenshot/image, or copied local files. Clipboard capture happens only when you request it; no clipboard history is monitored. You can also use the file picker.
+3. Drop a file, folder, or selected text into the shelf. Use **Paste from clipboard** or **Command/Ctrl + V** to add plain text, a copied screenshot/image, or copied local files. Transfer-shelf Paste captures only when requested. The separate Clipboard workspace offers encrypted, opt-in history and never sends a copied item automatically. You can also use the file picker.
 4. Hover over Machines. The list keeps LAN, Tailscale, and other SSH routes visible and separately labelled. You can search, filter, edit a destination, or add a machine manually.
 5. Drag an item onto a machine labelled Ready to send it. The highlighted target shows the destination. The transfer receipt confirms success or explains a failure. Held items stay available for sending to another machine.
 
 Every send creates a new `Drift-<timestamp>-<random>` folder inside the chosen Desktop folder. Existing remote files are not replaced. Text is sent as a UTF-8 `.txt` file. Removing an ordinary file from the shelf does not remove the original file. Text notes are stored privately in DropHarbor's app-data folder until removed.
+
+## Clipboard and Transfers
+
+The primary navigation gives **Transfers** and **Clipboard** equal prominence. Transfers retains the drag-to-machine shelf. Clipboard provides full-text search, type filters, favourites, reusable text snippets, text/image/file previews, Copy with original HTML formatting or Copy as plain text, and **Add to Transfers**. Copy never sends; adding to Transfers only stages the item. File history holds references to the originals, not backup copies.
+
+History starts **off**. Enable it explicitly in Clipboard; Pause stops background capture. The default cap is 200 entries, 30 days, and 32 MB total, with up to 1 MB of text and 8 MB of PNG data per item. Unpinned entries expire; favourites survive expiry and Clear unpinned, but still count toward capacity. Delete favourites individually when needed. History payloads are encrypted with AES-256-GCM and a key protected by the operating system secret store. Saving history and remembered passwords require a secure secret store; Linux plaintext fallback is refused. Configuration exports exclude clipboard history and all credentials.
+
+The app skips recognised private/transient clipboard markers and suspends automatic capture while its editors or password setup are active. Some applications and browser extensions do not mark sensitive content: pause history before copying secrets. Monitoring samples the clipboard; very rapid changes and compositor restrictions, especially Wayland, can limit capture. Source-app exclusions, direct paste into other apps, OCR, and cross-device clipboard sync are roadmap features, not part of this release. See [product design and research](PRODUCT_DESIGN.md).
+
+## Password access and one-time key setup
+
+Open **Access / Set up access** on a machine, then choose:
+
+- **Existing SSH key:** use configured keys or the local SSH agent.
+- **Use password once:** authenticate to the already trusted SSH server, generate a dedicated local Ed25519 key, append only its public key to the target account, and verify key-only access before saving the connection. The password is not saved. If a connection drops after installation may have begun, the same private key is retained for recovery and reused on retry.
+- **Save password securely:** verify access, then store only encrypted ciphertext bound to that address, username, port, and SSH alias. Forget password removes the saved credential. Background probes never try saved passwords; a rejected password pauses further attempts until explicitly replaced.
+
+SSH must already be enabled, reachable, and trusted in your existing known_hosts. Connect once through your terminal and verify the fingerprint against the machine before setup. The app never silently accepts an unknown or changed host key and cannot remotely enable an unreachable SSH server. No password is requested in configuration exports or logs. One-time setup prepares access; it does not send shelf content until you explicitly send or drop it.
+
+## Send to several machines
+
+Select shelf items and tick the target machines, then review **Send N items to M machines**. The confirmation lists destinations and counts. Up to 20 machines and 500 items can be selected; two destinations run concurrently. Each destination receives a fresh connection check and a collision-safe folder under its chosen Desktop. Activity shows independent progress/results. Selecting a machine alone never sends, and dropping onto a single machine still targets only that machine.
+
+**More deliberate** is the default shake sensitivity. Existing installations retain their saved preference unless changed in Settings.
 
 ## View modes and portable configuration
 
@@ -80,9 +104,9 @@ See [the Grok review summary](GROK_REVIEW.md) and [public-release preparation](P
 - File contents are copied from the original path at send time. Moving or deleting a queued original requires adding it again.
 - Symbolic links, sockets/devices, paths with control characters, and folders containing symbolic links are refused to avoid transferring unexpected files. Archive such folders first.
 - The shelf holds up to 500 items and individual text notes up to 20 MB. There is no artificial ordinary-file size limit, but each transfer has a one-hour timeout and requires available disk space.
-- One send runs at a time. A failed batch can contain partially delivered files; its receipt identifies the destination, and a retry creates a new folder.
-- Password prompts are intentionally not handled inside DropHarbor. Set up SSH keys or an unlocked SSH agent in your terminal.
-- The app does not enable SSH servers, alter firewall rules, change Tailscale access policies, or register itself to launch at login automatically.
+- One send operation runs at a time. A multi-machine operation runs up to two destination transfers concurrently, with independent receipts. A failed destination can contain partially delivered files; retrying creates a new folder.
+- Machine Access supports an existing SSH key, a password used once to install a dedicated public key, or a password saved in an OS-protected encrypted vault. Direct password routes require password authentication and SFTP on the destination. Proxy/jump-host and certificate-based trust routes retain their existing OpenSSH key workflow.
+- The app does not enable SSH servers, alter firewall rules, change Tailscale access policies, or register itself to launch at login automatically. One-time password setup installs a public key through an existing trusted SSH connection.
 
 ## References
 
@@ -94,3 +118,15 @@ See [the Grok review summary](GROK_REVIEW.md) and [public-release preparation](P
 ## Product editions
 
 The standard edition is **DropHarbor**. The personal edition remains **lex-drift** and bundles only the owner's private machine preset. Both repositories remain private during testing. The existing `lex-drift` settings directory, configuration schema, app ID, and worker lock remain stable so upgrading or switching editions preserves data and cannot start a second worker.
+
+## Clearing and Undo
+
+Clear shelf offers a 10-second Undo, restoring the exact cleared items alongside anything added afterward. Original files remain on disk; app-created text/image staging is cleaned up only after the recovery window expires. A pending clear survives an app restart for the remainder of that same window.
+
+## Port forwarding
+
+Right-click a machine or choose its Connections button. Choose **Local →** to listen on this device and reach a destination through that SSH machine, or **Remote ←** to listen on the SSH machine and reach a destination through this device. Enter a destination hostname/IP, its port, and the listening port, then choose Start. For example, Local with destination `localhost:3000` and listening port `8080` makes the remote service available at `127.0.0.1:8080` on this device.
+
+Connections shows starting/running/failed status, the owned OpenSSH process ID where applicable, and Stop. Save a plan to History to repeat it later; each saved plan can have a note. Plans never restart automatically. Editing a machine's endpoint invalidates an old plan until you review a new one. Quitting closes the app's own tunnels.
+
+Listeners bind to loopback. Remote forwarding verifies the actual remote listener before reporting Running, because SSH GatewayPorts settings can override requested bindings. Remote machines need `ss`, `lsof`, or Windows `Get-NetTCPConnection` for that check. An SSH alias with existing forwarding rules is refused to prevent opening additional ports unintentionally. Existing trusted key access and encrypted saved-password access are supported. Running means the SSH tunnel/listener is established; the destination service must also be available when used.

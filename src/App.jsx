@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, Check, CheckCheck, ChevronDown, CircleAlert, Clipboard, Download, File, FileText, Folder, History, KeyRound, Laptop, Loader2, Monitor, MousePointer2, Network, Pencil, Plus, RefreshCw, Search, Send, Server, Settings2, Trash2, Upload, Wifi, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, CheckCheck, ChevronDown, CircleAlert, Clipboard, Download, File, FileText, Folder, History, KeyRound, Laptop, Loader2, Monitor, MoreHorizontal, MousePointer2, Network, Pencil, Plus, RefreshCw, Search, Send, Server, Settings2, Trash2, Undo2, Upload, Wifi, X } from 'lucide-react';
+import ClipboardPanel from './ClipboardPanel';
+import TunnelPanel from './TunnelPanel';
 
 const ITEM_MIME = 'application/x-drift-items';
-const emptyState = { hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
+const emptyState = { hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
 const demoState = {
   ...emptyState,
   hosts: [
@@ -16,7 +18,7 @@ const freshHost = () => ({ name: '', address: '', user: '', port: 22, identityFi
 const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const formatSize = (size) => size ? size < 1024 ? `${size} B` : size < 1024 ** 2 ? `${(size / 1024).toFixed(1)} KB` : `${(size / 1024 ** 2).toFixed(1)} MB` : '';
 const routeLabel = (route) => route === 'tailscale' ? 'Tailscale' : route === 'lan' ? 'LAN' : 'SSH';
-const statusLabel = (status) => ({ ready: 'Ready', 'auth-required': 'Needs key', offline: 'Offline', checking: 'Checking', unknown: 'Unchecked' })[status] || 'Unchecked';
+const statusLabel = (status) => ({ ready: 'Ready', 'auth-required': 'Needs access', offline: 'Offline', checking: 'Checking', unknown: 'Unchecked' })[status] || 'Unchecked';
 const hostIcon = (host) => /spark|server/i.test(host.name) ? Server : /book|laptop/i.test(host.name) ? Laptop : Monitor;
 const orderHosts = (hosts) => { const rank = { ready: 0, checking: 1, unknown: 2, 'auth-required': 3, offline: 4 }; return [...hosts].sort((a, b) => (rank[a.status] ?? 2) - (rank[b.status] ?? 2)); };
 
@@ -26,31 +28,56 @@ function App() {
   useEffect(() => { document.title = productName; }, [productName]);
   const isDemo = !bridge;
   const [state, setState] = useState(isDemo ? demoState : emptyState);
+  const [activeSection, setActiveSection] = useState('transfers');
+  const [clipboardEditing, setClipboardEditing] = useState(false);
   const stateRef = useRef(state);
   const [loading, setLoading] = useState(!isDemo);
   const [machinesOpen, setMachinesOpen] = useState(true);
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [selectedHost, setSelectedHost] = useState('');
+  const [selectedHostIds, setSelectedHostIds] = useState([]);
   const [selectedItems, setSelectedItems] = useState([]);
+  const [batchReview, setBatchReview] = useState(null);
   const [trayDrag, setTrayDrag] = useState(false);
   const [dragHost, setDragHost] = useState('');
   const [dragging, setDragging] = useState(false);
   const [dragSnapshot, setDragSnapshot] = useState(null);
   const [modal, setModal] = useState(null);
   const [hostForm, setHostForm] = useState(freshHost);
+  const [accessHostId, setAccessHostId] = useState('');
+  const [accessMode, setAccessMode] = useState('key');
+  // Passwords are transient form input, separate from machine data and exports.
+  const [accessPassword, setAccessPassword] = useState('');
+  const [accessError, setAccessError] = useState('');
   const [textDraft, setTextDraft] = useState('');
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [machineMenu, setMachineMenu] = useState(null);
+  const [tunnels, setTunnels] = useState({ active: [], history: [] });
+  const [tunnelEntry, setTunnelEntry] = useState({ hostId: '', mode: 'local', tab: 'active' });
+  const [tunnelBusy, setTunnelBusy] = useState(false);
+  const [undoClock, setUndoClock] = useState(Date.now);
   const [reveal, setReveal] = useState(false);
   const fileInput = useRef(null);
   const noticeTimer = useRef(null);
   const dragDepth = useRef(0);
   const transferLock = useRef(false);
   const clipboardLock = useRef(false);
+  const accessLock = useRef(false);
+  const tunnelLock = useRef(false);
+  const undoLock = useRef(false);
+  const demoUndo = useRef(null);
+  const machineMenuRef = useRef(null);
   const suppressPasteUntil = useRef(0);
   const modalRef = useRef(null);
+  const closeModal = useCallback(() => {
+    if (accessLock.current || tunnelLock.current) return;
+    setAccessPassword(''); setAccessError(''); setAccessHostId(''); setModal(null);
+  }, []);
+  const setTunnelOperation = useCallback((value) => { tunnelLock.current = value; setTunnelBusy(value); }, []);
+  const applyTunnels = useCallback((next) => { if (next?.active && next?.history) setTunnels(next); }, []);
   const noticeNow = useCallback((message, kind = 'info') => {
     setNotice({ message, kind });
     clearTimeout(noticeTimer.current);
@@ -63,6 +90,15 @@ function App() {
   }, []);
   useEffect(() => { stateRef.current = state; }, [state]);
   useEffect(() => {
+    const expiresAt = Date.parse(state.clearShelfUndo?.expiresAt || '');
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
+    setUndoClock(Date.now());
+    const tick = setInterval(() => setUndoClock(Date.now()), 1000);
+    const expiry = setTimeout(() => { clearInterval(tick); setUndoClock(Date.now()); if (isDemo) demoUndo.current = null; }, Math.max(0, expiresAt - Date.now()) + 10);
+    return () => { clearInterval(tick); clearTimeout(expiry); };
+  }, [state.clearShelfUndo?.expiresAt, isDemo]);
+  useEffect(() => { if (modal !== 'access') setAccessPassword(''); }, [modal]);
+  useEffect(() => {
     if (!bridge) return;
     let mounted = true;
     Promise.resolve(bridge.getState()).then((next) => { if (mounted) applyState(next); }).catch((error) => noticeNow(error.message || `Could not load ${productName}.`, 'error')).finally(() => { if (mounted) setLoading(false); });
@@ -72,6 +108,31 @@ function App() {
   }, [bridge, applyState, noticeNow]);
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
   useEffect(() => {
+    if (typeof bridge?.getTunnels !== 'function') return;
+    let mounted = true;
+    Promise.resolve(bridge.getTunnels()).then((next) => { if (mounted) applyTunnels(next); }).catch(() => {});
+    const unsubscribe = bridge.onTunnels?.(applyTunnels);
+    return () => { mounted = false; unsubscribe?.(); };
+  }, [bridge, applyTunnels]);
+  useEffect(() => {
+    if (!machineMenu) return;
+    const previousFocus = document.activeElement;
+    const timer = setTimeout(() => machineMenuRef.current?.querySelector('[role="menuitem"]')?.focus(), 0);
+    const outside = (event) => { if (!machineMenuRef.current?.contains(event.target)) setMachineMenu(null); };
+    const keys = (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); setMachineMenu(null); previousFocus?.focus?.(); return; }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const nodes = Array.from(machineMenuRef.current?.querySelectorAll('[role="menuitem"]') || []);
+      if (!nodes.length) return;
+      const index = nodes.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? nodes.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + nodes.length) % nodes.length;
+      nodes[next]?.focus();
+    };
+    document.addEventListener('mousedown', outside); document.addEventListener('keydown', keys);
+    return () => { clearTimeout(timer); document.removeEventListener('mousedown', outside); document.removeEventListener('keydown', keys); };
+  }, [machineMenu]);
+  useEffect(() => {
     window.addEventListener('dragend', endDrag);
     window.addEventListener('blur', endDrag);
     return () => { window.removeEventListener('dragend', endDrag); window.removeEventListener('blur', endDrag); };
@@ -79,27 +140,29 @@ function App() {
   useEffect(() => { if (!dragging) setDragSnapshot(null); }, [dragging]);
   useEffect(() => {
     if (typeof bridge?.setInteraction !== 'function') return;
-    Promise.resolve(bridge.setInteraction({ dragging: Boolean(dragging), editing: Boolean(modal) })).catch(() => {});
-  }, [bridge, dragging, modal]);
+    Promise.resolve(bridge.setInteraction({ dragging: Boolean(dragging), editing: Boolean(modal || clipboardEditing || machineMenu), sensitiveEditing: modal === 'access' })).catch(() => {});
+  }, [bridge, dragging, modal, clipboardEditing, machineMenu]);
   useEffect(() => { setSelectedItems((ids) => ids.filter((id) => state.items.some((item) => item.id === id))); }, [state.items]);
+  useEffect(() => { setSelectedHostIds((ids) => ids.filter((id) => state.hosts.some((host) => host.id === id))); }, [state.hosts]);
   useEffect(() => {
     if (!modal) return;
     const before = document.activeElement;
     setTimeout(() => (modalRef.current?.querySelector('input, textarea, select') || modalRef.current?.querySelector('button'))?.focus(), 0);
     const trap = (event) => {
-      if (event.key === 'Escape') { setModal(null); return; }
+      if (event.key === 'Escape') { event.preventDefault(); closeModal(); return; }
       if (event.key !== 'Tab') return;
-      const nodes = Array.from(modalRef.current?.querySelectorAll('button:not(:disabled), input, textarea, select, [tabindex="0"]') || []);
+      const nodes = Array.from(modalRef.current?.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]') || []);
       if (!nodes.length) return;
       if (event.shiftKey && document.activeElement === nodes[0]) { event.preventDefault(); nodes.at(-1).focus(); }
       else if (!event.shiftKey && document.activeElement === nodes.at(-1)) { event.preventDefault(); nodes[0].focus(); }
     };
     document.addEventListener('keydown', trap);
     return () => { document.removeEventListener('keydown', trap); before?.focus?.(); };
-  }, [modal]);
+  }, [modal, closeModal]);
   useEffect(() => {
     const escape = (event) => {
       if (event.key !== 'Escape') return;
+      if (machineMenu) return;
       endDrag();
       if (modal) return;
       if (historyOpen) { setHistoryOpen(false); return; }
@@ -108,7 +171,7 @@ function App() {
     };
     document.addEventListener('keydown', escape);
     return () => document.removeEventListener('keydown', escape);
-  }, [modal, historyOpen, bridge, isDemo, endDrag]);
+  }, [modal, historyOpen, bridge, isDemo, endDrag, machineMenu]);
 
   const demoCall = async (method, value) => {
     const current = stateRef.current;
@@ -117,7 +180,18 @@ function App() {
     if (method === 'enqueueText') next.items.push({ id: uid(), name: value.trim().split('\n')[0].slice(0, 36) || 'Text note', kind: 'text', preview: value, size: new TextEncoder().encode(value).length });
     if (['enqueueFiles', 'enqueueText'].includes(method)) next.enqueuedItemIds = next.items.slice(current.items.length).map((item) => item.id);
     if (method === 'removeItem') next.items = next.items.filter((item) => item.id !== value);
-    if (method === 'clearItems') next.items = [];
+    if (method === 'clearItems' && next.items.length) {
+      const expiresAt = new Date(Date.now() + 10000).toISOString();
+      demoUndo.current = { items: [...next.items], expiresAt };
+      next.clearShelfUndo = { count: next.items.length, expiresAt }; next.items = [];
+    }
+    if (method === 'undoClear') {
+      const pending = demoUndo.current;
+      if (!pending || Date.parse(pending.expiresAt) <= Date.now()) throw new Error('The undo window has expired. Add the items to your shelf again.');
+      const restored = pending.items.filter((item) => !next.items.some((existing) => existing.id === item.id || (item.path && existing.path === item.path)));
+      next.items.push(...restored); next.restoredItemIds = restored.map((item) => item.id); next.enqueuedItemIds = next.restoredItemIds;
+      next.clearShelfUndo = null; demoUndo.current = null;
+    }
     if (method === 'saveHost') {
       const index = next.hosts.findIndex((host) => host.id === value.id);
       const host = { ...value, id: value.id || uid(), source: 'Manual', status: 'unknown' };
@@ -125,8 +199,8 @@ function App() {
     }
     if (method === 'removeHost') next.hosts = next.hosts.filter((host) => host.id !== value);
     if (method === 'updateSettings') next.settings = { ...next.settings, ...value };
-    if (method === 'send') {
-      next.history.unshift({ id: uid(), hostName: next.hosts.find((host) => host.id === value.hostId)?.name || 'Machine', itemCount: value.itemIds.length, status: 'failed', message: 'Demo preview: no files were transferred. Open the desktop application to send.', timestamp: new Date().toISOString() });
+    if (method === 'send' || method === 'sendMany') {
+      for (const hostId of value.hostIds || [value.hostId]) next.history.unshift({ id: uid(), hostName: next.hosts.find((host) => host.id === hostId)?.name || 'Machine', itemCount: value.itemIds.length, status: 'failed', message: 'Demo preview: no files were transferred. Open the desktop application to send.', timestamp: new Date().toISOString() });
       noticeNow('Demo preview only. No files were transferred.', 'info');
     }
     if (['refreshHosts', 'probeHosts'].includes(method)) noticeNow('Demo preview. Live discovery is available in the desktop app.');
@@ -152,6 +226,17 @@ function App() {
     if (!text?.trim()) return null;
     return action('enqueueText', text, 'Text added to your shelf.');
   };
+  const undoClearShelf = async () => {
+    if (undoLock.current || busy) return;
+    undoLock.current = true;
+    try {
+      const next = await action('undoClear');
+      if (!next) return;
+      const restoredIds = next.restoredItemIds || next.enqueuedItemIds || [];
+      setSelectedItems((ids) => [...new Set([...ids, ...restoredIds])].filter((id) => next.items.some((item) => item.id === id)));
+      noticeNow('Shelf restored. Items added since the clear are still here.', 'success');
+    } finally { undoLock.current = false; }
+  };
   const captureClipboard = async () => {
     if (clipboardLock.current || busy) return null;
     clipboardLock.current = true;
@@ -165,7 +250,7 @@ function App() {
     } finally { clipboardLock.current = false; }
   };
   useEffect(() => {
-    const editable = (event) => modal || /INPUT|TEXTAREA|SELECT/.test(event.target?.tagName || '') || event.target?.isContentEditable;
+    const editable = (event) => activeSection !== 'transfers' || modal || /INPUT|TEXTAREA|SELECT/.test(event.target?.tagName || '') || event.target?.isContentEditable;
     const shortcut = (event) => {
       if (isDemo || editable(event) || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'v') return;
       event.preventDefault();
@@ -186,7 +271,7 @@ function App() {
     document.addEventListener('keydown', shortcut);
     document.addEventListener('paste', paste);
     return () => { document.removeEventListener('keydown', shortcut); document.removeEventListener('paste', paste); };
-  }, [modal, isDemo, busy]);
+  }, [modal, isDemo, busy, activeSection]);
   const extractExternal = async (transfer) => {
     // Capture File objects and text before yielding: Chromium clears drag data after the event.
     const files = Array.from(transfer.files || []);
@@ -206,6 +291,7 @@ function App() {
     catch (error) { noticeNow(error.message, 'error'); }
   };
   const sendItems = async (hostId, ids) => {
+    if (accessLock.current) { noticeNow('Wait for access setup to finish before sending.', 'error'); return; }
     const host = stateRef.current.hosts.find((entry) => entry.id === hostId);
     if (!host || host.status !== 'ready') { noticeNow('Check SSH access for this machine before sending.', 'error'); return; }
     if (!ids.length) return;
@@ -223,7 +309,8 @@ function App() {
   };
   const dropHost = async (event, host) => {
     event.preventDefault(); event.stopPropagation(); endDrag();
-    if (host.status !== 'ready' || busy === 'send') { noticeNow(host.status !== 'ready' ? 'This machine needs a successful SSH check before you can send.' : 'A transfer is already in progress.', 'error'); return; }
+    if (accessLock.current) { noticeNow('Wait for access setup to finish before sending.', 'error'); return; }
+    if (host.status !== 'ready' || busy === 'send' || busy === 'sendMany') { noticeNow(host.status !== 'ready' ? 'This machine needs a successful SSH check before you can send.' : 'A transfer is already in progress.', 'error'); return; }
     const internal = event.dataTransfer.getData(ITEM_MIME);
     if (internal) {
       try { const ids = JSON.parse(internal).filter((id) => stateRef.current.items.some((item) => item.id === id)); await sendItems(host.id, ids); }
@@ -245,14 +332,103 @@ function App() {
     setDragSnapshot(orderHosts(stateRef.current.hosts));
     setMachinesOpen(true); setDragging(true);
   };
-  const openHost = (host) => { setHostForm(host ? { ...host } : freshHost()); setModal('host'); };
+  const openHost = (host) => { if (accessLock.current) return; setHostForm(host ? { ...host } : freshHost()); setModal('host'); };
+  const openAccess = (host) => {
+    if (accessLock.current || !host?.id) return;
+    setAccessHostId(host.id); setAccessMode(host.hasSavedPassword && stateRef.current.environment?.passwordStorageAvailable !== false ? 'saved' : host.status === 'ready' ? 'key' : 'once');
+    setAccessPassword(''); setAccessError(''); setModal('access');
+  };
+  const saveMachine = async (event) => {
+    event.preventDefault();
+    const previousIds = new Set(stateRef.current.hosts.map((host) => host.id));
+    const next = await action('saveHost', { ...hostForm, name: hostForm.name.trim(), address: hostForm.address.trim(), user: hostForm.user.trim(), port: Number(hostForm.port) });
+    if (!next) return;
+    const host = next.hosts.find((entry) => hostForm.id ? entry.id === hostForm.id : !previousIds.has(entry.id));
+    if (host) openAccess(host);
+    else { closeModal(); noticeNow('Machine saved. Open its access settings to connect.'); }
+  };
+  const configureAccess = async (event) => {
+    event.preventDefault();
+    if (accessLock.current || busy || !accessHostId) return;
+    if (transferLock.current || stateRef.current.history.some((entry) => entry.status === 'sending')) { setAccessError('Wait for the current transfer to finish before changing access.'); return; }
+    if (isDemo) { setAccessError('Access setup is available in the desktop app. No connection was made.'); return; }
+    if (accessMode === 'saved' && stateRef.current.environment?.passwordStorageAvailable === false) { setAccessError('Secure password storage is unavailable on this device. Use a password once to set up an SSH key instead.'); return; }
+    const hostId = accessHostId;
+    const mode = accessMode;
+    const password = accessPassword;
+    // Clear the input before IPC starts, including when setup later fails.
+    setAccessPassword(''); setAccessError(''); accessLock.current = true; setBusy('configureAccess');
+    try {
+      if (mode === 'key' && stateRef.current.hosts.find((host) => host.id === hostId)?.hasSavedPassword) await call('forgetPassword', hostId);
+      const next = mode === 'key' ? await call('probeHosts') : await call('configureAccess', { hostId, mode, password });
+      const host = next?.hosts?.find((entry) => entry.id === hostId);
+      if (host?.status !== 'ready') throw new Error(host?.error || 'Access could not be verified. Check the address, SSH service, and credentials, then try again.');
+      setModal(null); setAccessHostId('');
+      noticeNow(mode === 'once' ? 'SSH key access is ready. The password was not saved.' : mode === 'saved' ? 'Connected. Your password is stored securely on this device.' : 'SSH key access is ready.', 'success');
+    } catch (error) {
+      const message = error.message || 'Access setup failed. Check your connection and try again.';
+      setAccessError(password ? message.split(password).join('[redacted]') : message);
+    } finally { accessLock.current = false; setBusy(''); }
+  };
+  const forgetPassword = async () => {
+    if (accessLock.current || busy || !accessHostId) return;
+    accessLock.current = true; setBusy('forgetPassword'); setAccessPassword(''); setAccessError('');
+    try { await call('forgetPassword', accessHostId); setAccessMode('key'); noticeNow('Saved password removed from this device.'); }
+    catch (error) { setAccessError(error.message || 'Could not remove the saved password. Please try again.'); }
+    finally { accessLock.current = false; setBusy(''); }
+  };
+  const accessHost = state.hosts.find((host) => host.id === accessHostId);
+  const settingUpAccess = busy === 'configureAccess' || busy === 'forgetPassword';
+  const showMachineMenu = (event, host) => {
+    event.preventDefault(); event.stopPropagation();
+    if (accessLock.current || tunnelLock.current || transferLock.current) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.type === 'contextmenu' && event.clientX > 0 ? event.clientX : rect.right - 225;
+    const y = event.type === 'contextmenu' && event.clientY > 0 ? event.clientY : rect.bottom + 5;
+    setMachineMenu({ hostId: host.id, x: Math.max(10, Math.min(x, window.innerWidth - 250)), y: Math.max(10, Math.min(y, window.innerHeight - 205)) });
+  };
+  const openTunnels = (hostId = '', mode = 'local', tab = 'active') => {
+    if (accessLock.current || tunnelLock.current) return;
+    setMachineMenu(null); setHistoryOpen(false); setTunnelEntry({ hostId, mode, tab }); setModal('tunnels');
+  };
+  const toggleBatchHost = (host) => {
+    if (transferLock.current || accessLock.current) return;
+    setSelectedHostIds((ids) => {
+      if (ids.includes(host.id)) return ids.filter((id) => id !== host.id);
+      if (host.status !== 'ready' || ids.length >= 20) return ids;
+      return [...ids, host.id];
+    });
+  };
+  const reviewBatch = () => {
+    if (busy || !selectedItems.length || !selectedHostIds.length) return;
+    setBatchReview({ hostIds: [...selectedHostIds], itemIds: [...selectedItems] }); setModal('batch');
+  };
+  const sendBatch = async () => {
+    if (!batchReview || transferLock.current || accessLock.current || busy) return;
+    const { hostIds, itemIds } = batchReview;
+    const current = stateRef.current;
+    if (hostIds.some((id) => current.hosts.find((host) => host.id === id)?.status !== 'ready') || itemIds.some((id) => !current.items.some((item) => item.id === id))) { noticeNow('A machine or item changed. Close this review and check your selections.', 'error'); return; }
+    transferLock.current = true; setModal(null); setBatchReview(null); setHistoryOpen(true);
+    try {
+      const next = await action('sendMany', { hostIds, itemIds });
+      if (next && !isDemo) noticeNow('Batch transfer finished. Activity shows the result for each machine.');
+    } finally { transferLock.current = false; }
+  };
   const activeHost = state.hosts.find((host) => host.id === selectedHost);
   const displayHosts = dragSnapshot ? dragSnapshot.map((host) => state.hosts.find((latest) => latest.id === host.id) || host) : orderHosts(state.hosts);
   const visibleHosts = displayHosts.filter((host) => (filter === 'all' || host.route === filter) && `${host.name} ${host.address} ${host.user} ${host.sshAlias || ''}`.toLowerCase().includes(search.toLowerCase()));
-  const recentHistory = state.history.slice(0, 5);
+  // Keep every destination receipt from a full batch visible in the scrollable log.
+  const recentHistory = state.history.slice(0, 50);
   const warnings = state.discovery?.warnings || [];
   const lastSentItemIds = new Set(state.history.filter((entry) => entry.status === 'sent').flatMap((entry) => entry.itemIds || []));
-  const sending = state.history.some((entry) => entry.status === 'sending') || busy === 'send';
+  const sending = state.history.some((entry) => entry.status === 'sending') || busy === 'send' || busy === 'sendMany';
+  const batchHostsReady = selectedHostIds.every((id) => state.hosts.find((host) => host.id === id)?.status === 'ready');
+  const reviewHosts = (batchReview?.hostIds || []).map((id) => state.hosts.find((host) => host.id === id));
+  const reviewItems = (batchReview?.itemIds || []).map((id) => state.items.find((item) => item.id === id));
+  const batchReviewValid = !!reviewHosts.length && !!reviewItems.length && reviewHosts.every((host) => host?.status === 'ready') && reviewItems.every(Boolean);
+  const undoExpiresAt = Date.parse(state.clearShelfUndo?.expiresAt || '');
+  const undoSeconds = Math.max(0, Math.ceil((undoExpiresAt - Math.max(undoClock, Date.now())) / 1000));
+  const canUndoClear = state.clearShelfUndo?.count > 0 && undoSeconds > 0;
 
   return (
     <div className={`app view-${state.settings?.viewMode || 'expanded'} ${machinesOpen ? 'machines-open' : ''} ${dragging ? 'is-dragging' : ''} ${reveal ? 'revealed' : ''}`} onDragEnter={() => { if (!dragging) { setDragSnapshot(orderHosts(stateRef.current.hosts)); setDragging(true); } setMachinesOpen(true); }} onDragLeave={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return; if (event.target === event.currentTarget || event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom || (event.clientX === 0 && event.clientY === 0)) endDrag(); }} onDragOver={(event) => { event.preventDefault(); if (!machinesOpen) setMachinesOpen(true); }} onDrop={(event) => { event.preventDefault(); endDrag(); }}>
@@ -267,8 +443,10 @@ function App() {
         </div>
       </header>
 
+      <nav className="workspace-tabs" aria-label="Workspace"><button aria-current={activeSection === 'transfers' ? 'page' : undefined} className={activeSection === 'transfers' ? 'active' : ''} onClick={() => setActiveSection('transfers')}><Send size={15} /> Transfers{state.items.length > 0 && <span>{state.items.length}</span>}</button><button aria-current={activeSection === 'clipboard' ? 'page' : undefined} className={activeSection === 'clipboard' ? 'active' : ''} onClick={() => setActiveSection('clipboard')}><Clipboard size={15} /> Clipboard</button></nav>
+
       <main className="workspace">
-        <section className="shelf-pane" aria-label="File and text shelf">
+        {activeSection === 'transfers' ? <section className="shelf-pane" aria-label="File and text shelf">
           <div className="shelf-heading"><div><p className="eyebrow">Your file & text shelf</p><h1>Pick it up.<br />Move it over.</h1></div><div className="shelf-counter" title="Items on your shelf">{state.items.length}<span>on your shelf</span></div></div>
           <div className={`drop-tray ${trayDrag ? 'drag-over' : ''} ${state.items.length ? 'has-items' : ''}`} onDragEnter={(event) => { event.preventDefault(); if (event.dataTransfer.types.includes(ITEM_MIME)) return; dragDepth.current += 1; setTrayDrag(true); }} onDragLeave={(event) => { event.preventDefault(); dragDepth.current -= 1; if (dragDepth.current <= 0) setTrayDrag(false); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropTray}>
             {!state.items.length ? <div className="empty-tray">
@@ -278,48 +456,76 @@ function App() {
             </div> : <>
               <div className="queue-toolbar"><span>{selectedItems.length ? `${selectedItems.length} selected` : 'Your shelf'}</span><div><button onClick={() => setSelectedItems(selectedItems.length === state.items.length ? [] : state.items.map((item) => item.id))}>{selectedItems.length === state.items.length ? 'Deselect' : 'Select all'}</button><button className="icon-button small" title="Add files" aria-label="Add files" onClick={pickFiles}><Plus size={15} /></button></div></div>
               <div className="item-list">{state.items.map((item) => { const Icon = item.kind === 'text' ? FileText : item.kind === 'folder' ? Folder : File; return <div key={item.id} className={`shelf-item ${selectedItems.includes(item.id) ? 'selected' : ''}`} draggable onDragStart={(event) => startItemDrag(event, item)} onDragEnd={() => { setDragging(false); setDragHost(''); }} title={`Drag ${item.name} onto a ready machine`}>
-                <button className="item-select" aria-pressed={selectedItems.includes(item.id)} aria-label={`${selectedItems.includes(item.id) ? 'Deselect' : 'Select'} ${item.name}`} onClick={() => setSelectedItems((ids) => ids.includes(item.id) ? ids.filter((id) => id !== item.id) : [...ids, item.id])}><span className={`item-icon ${item.kind}`}><Icon size={20} strokeWidth={1.6} />{selectedItems.includes(item.id) && <span className="selected-check"><Check size={9} strokeWidth={3} /></span>}</span><span className="item-description"><strong>{item.name}</strong><span>{item.kind === 'text' ? item.preview?.replace(/\s+/g, ' ').slice(0, 68) : item.kind === 'folder' ? 'Folder' : formatSize(item.size) || 'File'}{lastSentItemIds.has(item.id) ? ' · Sent' : ''}</span></span></button>
+                <button className="item-select" aria-pressed={selectedItems.includes(item.id)} aria-label={`${selectedItems.includes(item.id) ? 'Deselect' : 'Select'} ${item.name}`} onClick={() => setSelectedItems((ids) => ids.includes(item.id) ? ids.filter((id) => id !== item.id) : [...ids, item.id])}><span className={`item-icon ${item.kind}`}><Icon size={20} strokeWidth={1.6} />{selectedItems.includes(item.id) && <span className="selected-check"><Check size={9} strokeWidth={3} /></span>}</span><span className="item-description"><strong>{item.name}</strong><span>{item.kind === 'text' ? item.preview?.replace(/\s+/g, ' ').slice(0, 68) : item.kind === 'folder' ? 'Folder' : formatSize(item.size) || 'File'}{lastSentItemIds.has(item.id) ? ' · Sent before' : ''}</span></span></button>
                 <button className="icon-button item-remove" aria-label={`Remove ${item.name} from shelf`} onClick={() => action('removeItem', item.id)}><X size={13} /></button>
               </div>; })}</div>
               <div className="queue-foot"><span><MousePointer2 size={13} /> Drag onto a machine</span><div className="queue-actions"><button className="text-button" disabled={!!busy} onClick={captureClipboard} title="Paste copied files, an image, or text · ⌘ / Ctrl + V">{busy === 'captureClipboard' ? <Loader2 size={13} className="spinning" /> : <Clipboard size={13} />} {busy === 'captureClipboard' ? 'Pasting…' : 'Paste from clipboard'}</button><button className="text-button" onClick={() => { setTextDraft(''); setModal('text'); }}><Plus size={13} /> Add text</button></div></div>
             </>}
             {trayDrag && state.items.length > 0 && <div className="drop-overlay"><Plus size={25} /><strong>Add to your shelf</strong></div>}
           </div>
-          <div className="shelf-bottom"><span title={`Shake once to show ${productName}. Pause briefly, then shake again to hide. ⌘ / Ctrl + Shift + Space also toggles the shelf.`}><MousePointer2 size={13} /> {isDemo ? 'Shake to show or hide in the desktop app' : state.settings?.shakeEnabled ? 'Shake to show / hide · ⌘ / Ctrl + Shift + Space' : state.environment?.shortcutAvailable === false ? `Open ${productName} from your tray` : 'Show / hide · ⌘ / Ctrl + Shift + Space'}</span>{state.items.length > 0 && <button className="text-button muted" onClick={() => action('clearItems')}>Clear shelf</button>}</div>
-          {state.items.length > 0 && <div className="send-bar"><span>{activeHost ? <><span className={`tiny-dot ${activeHost.status}`} /> {activeHost.name}<small>{activeHost.destination || '~/Desktop'}</small></> : 'Choose a machine, or drop an item on one.'}</span><button className="primary-button compact" disabled={!activeHost || activeHost.status !== 'ready' || !selectedItems.length || sending} onClick={() => sendItems(activeHost.id, selectedItems)}>{sending ? <Loader2 size={14} className="spinning" /> : <Send size={13} />} Send{selectedItems.length > 0 ? ` ${selectedItems.length}` : ''}</button></div>}
-        </section>
+          <div className="shelf-bottom"><span title={`Shake once to show ${productName}. Pause briefly, then shake again to hide. ⌘ / Ctrl + Shift + Space also toggles the shelf.`}><MousePointer2 size={13} /> {isDemo ? 'Shake to show or hide in the desktop app' : state.settings?.shakeEnabled ? 'Shake to show / hide · ⌘ / Ctrl + Shift + Space' : state.environment?.shortcutAvailable === false ? `Open ${productName} from your tray` : 'Show / hide · ⌘ / Ctrl + Shift + Space'}</span>{state.items.length > 0 && <button className="text-button muted" disabled={!!busy || sending} onClick={() => action('clearItems')}>Clear shelf</button>}</div>
+          {state.items.length > 0 && selectedHostIds.length === 0 && <div className="send-bar"><span>{activeHost ? <><span className={`tiny-dot ${activeHost.status}`} /> {activeHost.name}<small>{activeHost.destination || '~/Desktop'}</small></> : 'Choose a machine, or drop an item on one.'}</span><button className="primary-button compact" disabled={!activeHost || activeHost.status !== 'ready' || !selectedItems.length || sending || settingUpAccess} onClick={() => sendItems(activeHost.id, selectedItems)}>{sending ? <Loader2 size={14} className="spinning" /> : <Send size={13} />} Send{selectedItems.length > 0 ? ` ${selectedItems.length}` : ''}</button></div>}
+          {state.items.length > 0 && selectedHostIds.length > 0 && <div className="send-bar batch-send-bar"><span><strong>{selectedItems.length} {selectedItems.length === 1 ? 'item' : 'items'} → {selectedHostIds.length} {selectedHostIds.length === 1 ? 'machine' : 'machines'}</strong><small>{!selectedItems.length ? 'Select the items you want to send.' : !batchHostsReady ? 'A selected machine needs an SSH check.' : 'Review destinations before sending.'}</small></span><button className="primary-button compact" disabled={!selectedItems.length || !batchHostsReady || !!busy || sending} onClick={reviewBatch}><Send size={13} /> Review & send</button></div>}
+        </section> : <ClipboardPanel bridge={bridge} blocked={settingUpAccess || sending} onEditingChange={setClipboardEditing} onAddToShelf={(next) => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine or drag the item to send.'); }} />}
 
         {machinesOpen && <aside className="machines-pane" id="machines-pane" aria-label="Machines">
           <div className="pane-heading"><div><p className="eyebrow">LAN, Tailscale & SSH</p><h2>Machines</h2></div><button className="icon-button small" aria-label="Close machines" onClick={() => !dragging && setMachinesOpen(false)}><X size={15} /></button></div>
-          <p className="machines-intro">Drop on a ready machine to send.<br />Clicking only selects it.</p>
+          <p className="machines-intro">Drop onto one ready machine, or tick several.<br />Clicking a name only selects it.</p>
+          {selectedHostIds.length > 0 && <div className="batch-machine-selection"><span>{selectedHostIds.length} selected for a batch</span><button className="text-button" disabled={sending || settingUpAccess} onClick={() => setSelectedHostIds([])}>Clear</button></div>}
           <div className="machine-search"><Search size={14} /><input aria-label="Search machines" placeholder="Find a machine…" value={search} onChange={(event) => setSearch(event.target.value)} />{search && <button aria-label="Clear search" onClick={() => setSearch('')}><X size={12} /></button>}</div>
           <div className="route-tabs" role="group" aria-label="Connection route">{[['all', 'All'], ['tailscale', 'Tailscale'], ['lan', 'LAN'], ['ssh', 'SSH']].map(([value, label]) => <button key={value} aria-pressed={filter === value} className={filter === value ? 'selected' : ''} onClick={() => setFilter(value)}>{label}</button>)}</div>
-          <div className="machine-list">{loading ? <div className="empty-machines"><Loader2 size={22} className="spinning" /><p>Finding your machines…</p></div> : visibleHosts.length === 0 ? <div className="empty-machines"><Network size={24} /><strong>{search ? 'No matches' : 'A place to start'}</strong><p>{search ? 'Try another name or address.' : 'Import Wave and SSH connections, or add a machine yourself.'}</p></div> : visibleHosts.map((host) => { const Icon = hostIcon(host); const ready = host.status === 'ready'; return <div key={host.id} className={`machine-target ${selectedHost === host.id ? 'selected' : ''} ${dragHost === host.id ? ready ? 'drop-ready' : 'drop-blocked' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDragHost(host.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragHost(''); }} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = ready && !sending ? 'copy' : 'none'; setDragHost(host.id); }} onDrop={(event) => dropHost(event, host)}>
+          <div className="machine-list">{loading ? <div className="empty-machines"><Loader2 size={22} className="spinning" /><p>Finding your machines…</p></div> : visibleHosts.length === 0 ? <div className="empty-machines"><Network size={24} /><strong>{search ? 'No matches' : 'A place to start'}</strong><p>{search ? 'Try another name or address.' : 'Import Wave and SSH connections, or add a machine yourself.'}</p></div> : visibleHosts.map((host) => { const Icon = hostIcon(host); const ready = host.status === 'ready'; return <div key={host.id} className={`machine-target ${selectedHost === host.id ? 'selected' : ''} ${dragHost === host.id ? ready ? 'drop-ready' : 'drop-blocked' : ''}`} onContextMenu={(event) => showMachineMenu(event, host)} onDragEnter={(event) => { event.preventDefault(); setDragHost(host.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDragHost(''); }} onDragOver={(event) => { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = ready && !sending && !settingUpAccess ? 'copy' : 'none'; setDragHost(host.id); }} onDrop={(event) => dropHost(event, host)}>
             <button className="machine-main" aria-pressed={selectedHost === host.id} onClick={() => setSelectedHost(host.id)} title={host.error || `${host.user ? `${host.user}@` : ''}${host.address}:${host.port || 22}`} aria-label={`Select ${host.name}, ${routeLabel(host.route)}, ${statusLabel(host.status)}`}><span className="machine-icon"><Icon size={19} strokeWidth={1.6} /></span><span className="machine-info"><strong>{host.name}</strong><span>{host.user ? `${host.user}@` : ''}{host.address}</span></span>{selectedHost === host.id && <Check size={13} className="host-check" />}</button>
-            <div className="machine-details"><span className={`host-status ${host.status}`}><span className={`tiny-dot ${host.status}`} />{statusLabel(host.status)}</span><span className="route-label">{host.route === 'tailscale' ? <Wifi size={10} /> : <Network size={10} />}{routeLabel(host.route)}</span><span className="source-label">{host.source}</span><button className="edit-host" title={`Edit ${host.name}`} aria-label={`Edit ${host.name}`} onClick={() => openHost(host)}><Pencil size={11} /></button></div>
-            <div className="destination-line" title={host.destination || '~/Desktop'}>{dragHost === host.id ? ready ? <><ArrowDownToLine size={12} /> Release to send to {host.destination || '~/Desktop'}</> : <><KeyRound size={11} /> {host.status === 'offline' ? 'Machine unavailable' : 'Check SSH access first'}</> : <><Folder size={11} /> {host.destination || '~/Desktop'}</>}</div>
+            <div className="machine-details"><label className="batch-host-choice" title={`Include ${host.name} in a batch transfer`}><input type="checkbox" aria-label={`Include ${host.name} in batch transfer`} checked={selectedHostIds.includes(host.id)} disabled={sending || settingUpAccess || (!selectedHostIds.includes(host.id) && (!ready || selectedHostIds.length >= 20))} onChange={() => toggleBatchHost(host)} /></label><span className={`host-status ${host.status}`}><span className={`tiny-dot ${host.status}`} />{statusLabel(host.status)}</span><span className="route-label">{host.route === 'tailscale' ? <Wifi size={10} /> : <Network size={10} />}{routeLabel(host.route)}</span><span className="source-label">{host.source}</span><button className="edit-host" title={`Edit ${host.name}`} aria-label={`Edit ${host.name}`} disabled={settingUpAccess || sending} onClick={() => openHost(host)}><Pencil size={11} /></button><button className="host-connections" title={`Port forwarding for ${host.name}`} aria-label={`Connections for ${host.name}`} aria-haspopup="menu" aria-expanded={machineMenu?.hostId === host.id} disabled={settingUpAccess || sending || tunnelBusy} onClick={(event) => showMachineMenu(event, host)}><MoreHorizontal size={15} /></button></div>
+            <div className="destination-line" title={host.destination || '~/Desktop'}>{dragHost === host.id ? ready ? <><ArrowDownToLine size={12} /> Release to send to {host.destination || '~/Desktop'}</> : <><KeyRound size={11} /> {host.status === 'offline' ? 'Machine unavailable' : 'Check SSH access first'}</> : <><Folder size={11} /><span className="destination-path">{host.destination || '~/Desktop'}</span><button className="access-button" disabled={!!busy || sending} onClick={() => openAccess(host)} aria-label={`Set up access for ${host.name}`}><KeyRound size={11} />{ready ? 'Access' : 'Set up access'}</button></>}</div>
           </div>; })}</div>
-          <div className="machine-pane-bottom"><button className="add-machine" onClick={() => openHost()}><Plus size={15} /> Add a machine <span>manually</span></button><div className="discovery-actions"><button disabled={!!busy} onClick={() => action('refreshHosts')}><RefreshCw size={12} className={busy === 'refreshHosts' ? 'spinning' : ''} /> Import / refresh</button><button disabled={!!busy} onClick={() => action('probeHosts')}><CheckCheck size={13} className={busy === 'probeHosts' ? 'spinning' : ''} /> Check SSH</button></div></div>
+          <div className="machine-pane-bottom"><button className="add-machine" disabled={settingUpAccess || sending} onClick={() => openHost()}><Plus size={15} /> Add a machine <span>manually</span></button><div className="discovery-actions"><button disabled={!!busy} onClick={() => action('refreshHosts')}><RefreshCw size={12} className={busy === 'refreshHosts' ? 'spinning' : ''} /> Import / refresh</button><button disabled={!!busy} onClick={() => action('probeHosts')}><CheckCheck size={13} className={busy === 'probeHosts' ? 'spinning' : ''} /> Check SSH</button></div></div>
         </aside>}
       </main>
 
-      <footer className="app-footer"><button className={`history-toggle ${historyOpen ? 'active' : ''}`} onClick={() => setHistoryOpen((open) => !open)} aria-expanded={historyOpen}><History size={13} /> Activity {state.history.length > 0 && <span>{state.history.length}</span>}<ChevronDown size={11} /></button><span className="footer-hint">{sending ? <><Loader2 size={11} className="spinning" /> Transfer in progress</> : <><span className="tiny-dot ready" /> {state.hosts.filter((host) => host.status === 'ready').length} ready {isDemo ? '· Preview' : '· SSH encrypted'}</>}</span>{warnings.length > 0 && <button className="warning-indicator" title="View discovery notices" onClick={() => setModal('settings')}><CircleAlert size={12} /> {warnings.length}</button>}</footer>
+      <footer className="app-footer"><button className={`history-toggle ${historyOpen ? 'active' : ''}`} onClick={() => setHistoryOpen((open) => !open)} aria-expanded={historyOpen}><History size={13} /> Activity {state.history.length > 0 && <span>{state.history.length}</span>}<ChevronDown size={11} /></button><button className="history-toggle" onClick={() => openTunnels()} aria-label="Connections and forwarding history"><Network size={13} /> Connections{tunnels.active.length > 0 && <span>{tunnels.active.length}</span>}</button><span className="footer-hint">{sending ? <><Loader2 size={11} className="spinning" /> Transfer in progress</> : <><span className="tiny-dot ready" /> {state.hosts.filter((host) => host.status === 'ready').length} ready {isDemo ? '· Preview' : '· SSH encrypted'}</>}</span>{warnings.length > 0 && <button className="warning-indicator" title="View discovery notices" onClick={() => setModal('settings')}><CircleAlert size={12} /> {warnings.length}</button>}</footer>
       {historyOpen && <section className="history-panel" aria-label="Transfer activity"><div className="history-heading"><strong>Transfer activity</strong><button className="icon-button small" aria-label="Close activity" onClick={() => setHistoryOpen(false)}><X size={14} /></button></div>{recentHistory.length ? recentHistory.map((entry) => <div className="history-row" key={entry.id}><span className={`history-icon ${entry.status}`}>{entry.status === 'sending' ? <Loader2 size={14} className="spinning" /> : entry.status === 'sent' ? <Check size={14} /> : <CircleAlert size={14} />}</span><div><strong>{entry.itemCount} {entry.itemCount === 1 ? 'item' : 'items'} → {entry.hostName}</strong><p>{entry.message || (entry.status === 'sent' ? 'Delivered. Your shelf items remain available.' : entry.status === 'sending' ? 'Sending securely over SSH…' : 'Transfer failed.')}</p></div><time>{entry.timestamp ? new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</time></div>) : <div className="history-empty">Your transfers will appear here.</div>}</section>}
-      {notice && <div className={`toast ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.kind === 'success' ? <Check size={15} /> : notice.kind === 'error' ? <CircleAlert size={15} /> : <span className="toast-dot" />}<span>{notice.message}</span><button aria-label="Dismiss notice" onClick={() => setNotice(null)}><X size={13} /></button></div>}
+      {notice && <div className={`toast ${notice.kind} ${canUndoClear ? 'above-undo' : ''}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.kind === 'success' ? <Check size={15} /> : notice.kind === 'error' ? <CircleAlert size={15} /> : <span className="toast-dot" />}<span>{notice.message}</span><button aria-label="Dismiss notice" onClick={() => setNotice(null)}><X size={13} /></button></div>}
+      {canUndoClear && <div className="shelf-undo" role="status" aria-live="polite"><Undo2 size={16} /><span><strong>{state.clearShelfUndo.count} {state.clearShelfUndo.count === 1 ? 'item' : 'items'} cleared from your shelf.</strong><small>You can undo this clear.</small></span><span className="undo-countdown" aria-hidden="true">{undoSeconds}s</span><button className="quiet-button" disabled={!!busy || sending} onClick={undoClearShelf} aria-label="Undo clear shelf">{busy === 'undoClear' ? <Loader2 size={13} className="spinning" /> : <Undo2 size={13} />} Undo</button></div>}
 
-      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setModal(null); }}><section className={`modal ${modal === 'host' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" onClick={() => setModal(null)}><X size={17} /></button></div>
+      {machineMenu && <div className="machine-context-menu" role="menu" aria-label="Machine connections" id="machine-context-menu" ref={machineMenuRef} style={{ left: machineMenu.x, top: machineMenu.y }}><span className="machine-context-title">{state.hosts.find((host) => host.id === machineMenu.hostId)?.name || 'Machine'}</span><button role="menuitem" onClick={() => openTunnels(machineMenu.hostId, 'local', 'new')}><ArrowRight size={16} /><span><strong>Local port forward</strong><small>This device → SSH machine</small></span></button><button role="menuitem" onClick={() => openTunnels(machineMenu.hostId, 'remote', 'new')}><ArrowRight size={16} className="remote-arrow" /><span><strong>Remote port forward</strong><small>SSH machine → this device</small></span></button><button role="menuitem" onClick={() => openTunnels(machineMenu.hostId, 'local', 'active')}><History size={15} /><span><strong>Active & saved forwards</strong><small>Monitor, stop, or repeat a connection</small></span></button></div>}
+      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}><section className={`modal ${modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
+        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy} onClick={closeModal}><X size={17} /></button></div>
+        {modal === 'tunnels' && <TunnelPanel key={`${tunnelEntry.hostId}-${tunnelEntry.mode}-${tunnelEntry.tab}`} bridge={bridge} host={state.hosts.find((host) => host.id === tunnelEntry.hostId)} initialMode={tunnelEntry.mode} initialTab={tunnelEntry.tab} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} onClose={closeModal} blocked={settingUpAccess || sending} />}
         {modal === 'text' && <form onSubmit={async (event) => { event.preventDefault(); const next = await addText(textDraft); if (next) setModal(null); }}><p className="modal-intro">Paste a note, a link, or something worth keeping. It will wait on your shelf.</p><textarea className="text-editor" autoFocus rows={8} placeholder="Put your words here…" value={textDraft} onChange={(event) => setTextDraft(event.target.value)} /><div className="modal-actions"><span className="keyboard-hint">⌘ / Ctrl + V also works on the shelf</span><button className="primary-button" disabled={!textDraft.trim() || !!busy}><Plus size={14} /> Add to shelf</button></div></form>}
-        {modal === 'host' && <form onSubmit={async (event) => { event.preventDefault(); const next = await action('saveHost', { ...hostForm, name: hostForm.name.trim(), address: hostForm.address.trim(), user: hostForm.user.trim(), port: Number(hostForm.port) }); if (next) { setModal(null); noticeNow('Machine saved. Use Check SSH to verify access.'); } }}>
+        {modal === 'host' && <form onSubmit={saveMachine}>
           <p className="modal-intro">Use a LAN name, a Tailscale IP, or any SSH address. A successful SSH check makes it ready to receive.</p>
           {hostForm.error && <p className="settings-warning"><CircleAlert size={15} />{hostForm.error}</p>}
           <div className="form-grid"><label className="field">Machine name<input required autoFocus placeholder="e.g. Studio Mac" value={hostForm.name} onChange={(event) => setHostForm({ ...hostForm, name: event.target.value })} /></label><label className="field">Route<select value={hostForm.route} onChange={(event) => setHostForm({ ...hostForm, route: event.target.value })}><option value="ssh">SSH</option><option value="lan">LAN</option><option value="tailscale">Tailscale</option></select></label><label className="field wide">Address<input required placeholder="100.x.x.x or studio.local" value={hostForm.address} onChange={(event) => setHostForm({ ...hostForm, address: event.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label><label className="field">Login username<input required placeholder="Your remote account" value={hostForm.user} onChange={(event) => setHostForm({ ...hostForm, user: event.target.value })} autoCapitalize="none" autoCorrect="off" spellCheck={false} /></label><label className="field">SSH port<input type="number" min="1" max="65535" required value={hostForm.port} onChange={(event) => setHostForm({ ...hostForm, port: event.target.value })} /></label><label className="field wide">Destination folder<input required placeholder={hostForm.os === 'windows' ? 'C:/Users/you/Desktop' : '~/Desktop'} value={hostForm.destination} onChange={(event) => setHostForm({ ...hostForm, destination: event.target.value })} spellCheck={false} /><small>Files are delivered in a new batch folder to prevent overwriting.</small></label><label className="field">Remote operating system<select value={hostForm.os || 'posix'} onChange={(event) => setHostForm({ ...hostForm, os: event.target.value })}><option value="posix">macOS / Linux</option><option value="windows">Windows</option></select></label><label className="field">SSH alias <span>optional</span><input placeholder="Existing SSH host alias" value={hostForm.sshAlias || ''} onChange={(event) => setHostForm({ ...hostForm, sshAlias: event.target.value })} spellCheck={false} /></label><label className="field wide">SSH key path <span>optional</span><input placeholder="~/.ssh/id_ed25519" value={hostForm.identityFile || ''} onChange={(event) => setHostForm({ ...hostForm, identityFile: event.target.value })} spellCheck={false} /><small>Leave empty to use your SSH agent or SSH configuration. Private keys stay on this device.</small></label></div>
-          <div className="modal-actions">{hostForm.id && hostForm.source === 'Manual' ? <button type="button" className="danger-button" onClick={async () => { if (await action('removeHost', hostForm.id)) setModal(null); }}><Trash2 size={13} /> Remove</button> : <span className="keyboard-hint">{hostForm.id ? `Imported from ${hostForm.source}; edits are stored in ${productName}.` : 'You can edit this later.'}</span>}<button className="primary-button" disabled={!!busy}><Check size={14} /> Save machine</button></div>
+          <div className="modal-actions">{hostForm.id && hostForm.source === 'Manual' ? <button type="button" className="danger-button" onClick={async () => { if (await action('removeHost', hostForm.id)) setModal(null); }}><Trash2 size={13} /> Remove</button> : <span className="keyboard-hint">{hostForm.id ? `Imported from ${hostForm.source}; edits are stored in ${productName}.` : 'You can edit this later.'}</span>}<button className="primary-button" disabled={!!busy}><Check size={14} /> Save & set up access</button></div>
         </form>}
-        {modal === 'settings' && <div className="settings-content"><div className="setting-row"><div><strong>Shake to show or hide</strong><p>A quick back and forth shows the shelf. Pause briefly, then shake again to hide it. Dragging and open dialogs keep it visible.</p></div><button role="switch" aria-checked={!!state.settings?.shakeEnabled} aria-label="Shake to show or hide" className={`switch ${state.settings?.shakeEnabled ? 'on' : ''}`} onClick={() => action('updateSettings', { shakeEnabled: !state.settings?.shakeEnabled })}><span /></button></div><label className="setting-row"><div><strong>Shake sensitivity</strong><p>Choose how much movement shows or hides the shelf.</p></div><select value={state.settings?.sensitivity || 'normal'} onChange={(event) => action('updateSettings', { sensitivity: event.target.value })}><option value="gentle">More sensitive</option><option value="normal">Balanced</option><option value="strong">More deliberate</option></select></label>
+        {modal === 'batch' && batchReview && <div className="batch-review"><p className="modal-intro">Send <strong>{reviewItems.length} {reviewItems.length === 1 ? 'item' : 'items'}</strong> to <strong>{reviewHosts.length} {reviewHosts.length === 1 ? 'machine' : 'machines'}</strong>. Each machine gets its own copy. Your shelf keeps the originals.</p><h3>Destination machines</h3><ul className="batch-review-hosts">{reviewHosts.map((host, index) => <li key={batchReview.hostIds[index]}><Monitor size={15} /><div><strong>{host?.name || 'Machine removed'}</strong><span>{host ? `${host.user ? `${host.user}@` : ''}${host.address}` : 'Close this review and update your selections.'}</span><small>{host?.destination || '~/Desktop'}</small></div><span className={`host-status ${host?.status}`}>{host ? statusLabel(host.status) : 'Missing'}</span></li>)}</ul><h3>Items to copy</h3><ul className="batch-review-items">{reviewItems.map((item, index) => <li key={batchReview.itemIds[index]}><File size={13} /><span>{item?.name || 'Item removed'}</span></li>)}</ul><p className="access-help">Transfers run on up to two machines at a time. Activity shows success or failure for each destination. Dropping on a machine still sends only to that machine.</p>{!batchReviewValid && <p className="access-error" role="alert">A selected machine or item is no longer ready. Close this review and check your selections.</p>}<div className="modal-actions"><button className="quiet-button" onClick={closeModal}>Cancel</button><button className="primary-button" disabled={!batchReviewValid || !!busy || sending} onClick={sendBatch}><Send size={14} /> Send {reviewItems.length} {reviewItems.length === 1 ? 'item' : 'items'} to {reviewHosts.length} {reviewHosts.length === 1 ? 'machine' : 'machines'}</button></div></div>}
+        {modal === 'access' && accessHost && <form className="access-form" onSubmit={configureAccess} aria-busy={settingUpAccess}>
+          <p className="modal-intro">Choose how to connect to <strong>{accessHost.name}</strong>. Setting up access does not send your shelf items.</p>
+          <div className="access-machine"><Monitor size={17} /><div><strong>{accessHost.name}</strong><span>{accessHost.user ? `${accessHost.user}@` : ''}{accessHost.address}:{accessHost.port || 22}</span></div><span className={`host-status ${accessHost.status}`}>{statusLabel(accessHost.status)}</span></div>
+          <fieldset className="access-options" disabled={!!busy}>
+            <legend>Connection method</legend>
+            {[
+              ['key', 'Use an existing SSH key', 'Use the key or SSH agent already configured on this device.'],
+              ['once', 'Use password once', 'Create a key on this device, install its public key on this machine, and verify access. The password is not saved.'],
+              ['saved', 'Save password securely', 'Use this password for future connections until you remove or replace it. It stays in encrypted storage on this device.'],
+            ].map(([mode, title, description]) => <label className={`access-option ${accessMode === mode ? 'selected' : ''} ${mode === 'saved' && state.environment?.passwordStorageAvailable === false ? 'unavailable' : ''}`} key={mode}><input type="radio" name="access-mode" value={mode} checked={accessMode === mode} disabled={mode === 'saved' && state.environment?.passwordStorageAvailable === false} onChange={() => { setAccessMode(mode); setAccessPassword(''); setAccessError(''); }} /><span><strong>{title}</strong><small>{description}</small></span></label>)}
+          </fieldset>
+          {accessHost.hasSavedPassword && <div className="saved-access"><span><KeyRound size={13} /> A password is saved on this device.</span><button type="button" className="text-button" disabled={!!busy || sending} onClick={forgetPassword}>Forget password</button></div>}
+          {accessHost.passwordPaused && <p className="access-error" role="alert"><CircleAlert size={15} /><span>The saved password did not work. Automatic retries are paused. Re-enter your password to try again.</span></p>}
+          {accessMode === 'key' && accessHost.hasSavedPassword && <p className="access-help">Switching to an SSH key removes this machine’s saved password from this device.</p>}
+          {state.environment?.passwordStorageAvailable === false && <p className="access-help">Secure password storage is unavailable on this device. You can still use a password once to set up an SSH key.</p>}
+          {accessMode !== 'key' && <label className="field access-password">{accessHost.hasSavedPassword && accessMode === 'saved' ? 'Replacement password' : 'Machine login password'}<input name="remote-password" type="password" autoComplete="current-password" autoCapitalize="none" autoCorrect="off" spellCheck={false} required maxLength={1024} disabled={!!busy || isDemo} value={accessPassword} onChange={(event) => setAccessPassword(event.target.value)} aria-describedby="access-password-help" /><small id="access-password-help">Use the password for {accessHost.user || 'your account'} on this machine. Passwords are excluded from configuration exports.</small></label>}
+          <p className="access-prerequisites"><KeyRound size={14} /><span>SSH must already be running and reachable. Connect once in your terminal to verify and trust the machine’s SSH fingerprint. This setup cannot turn on a remote SSH server that is unavailable.</span></p>
+          {isDemo && <p className="access-help">Preview only. Open the desktop app to set up access; password entry is disabled here.</p>}
+          {accessError && <p className="access-error" role="alert"><CircleAlert size={15} /><span>{accessError}</span></p>}
+          {settingUpAccess && <p className="access-progress" role="status"><Loader2 size={14} className="spinning" />{busy === 'forgetPassword' ? 'Removing the saved password…' : accessMode === 'once' ? 'Connecting, installing your public key, and verifying access…' : 'Connecting and verifying access…'}</p>}
+          <div className="modal-actions"><button type="button" className="quiet-button" disabled={settingUpAccess} onClick={closeModal}>Done</button><button className="primary-button" disabled={!!busy || sending || isDemo || (accessMode !== 'key' && !accessPassword)}>{settingUpAccess ? <Loader2 size={14} className="spinning" /> : <KeyRound size={14} />}{accessMode === 'once' ? 'Set up SSH key' : accessMode === 'saved' ? accessHost.hasSavedPassword ? 'Replace & connect' : 'Save & connect' : accessHost.hasSavedPassword ? 'Use SSH key' : 'Check SSH access'}</button></div>
+        </form>}
+        {modal === 'settings' && <div className="settings-content"><div className="setting-row"><div><strong>Shake to show or hide</strong><p>A quick back and forth shows the shelf. Pause briefly, then shake again to hide it. Dragging and open dialogs keep it visible.</p></div><button role="switch" aria-checked={!!state.settings?.shakeEnabled} aria-label="Shake to show or hide" className={`switch ${state.settings?.shakeEnabled ? 'on' : ''}`} onClick={() => action('updateSettings', { shakeEnabled: !state.settings?.shakeEnabled })}><span /></button></div><label className="setting-row"><div><strong>Shake sensitivity</strong><p>Choose how much movement shows or hides the shelf. More deliberate is the default.</p></div><select value={state.settings?.sensitivity || 'strong'} onChange={(event) => action('updateSettings', { sensitivity: event.target.value })}><option value="gentle">More sensitive</option><option value="normal">Balanced</option><option value="strong">More deliberate</option></select></label>
           <label className="setting-row"><div><strong>View size</strong><p>Keep it compact, or make room for more items.</p></div><select aria-label="View size" disabled={!!busy} value={state.settings?.viewMode || 'expanded'} onChange={(event) => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Expanded</option><option value="large">Large</option></select></label>
           <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. {productName} does not watch or share your clipboard in the background.</p></div></div>
-          <div className="settings-note"><KeyRound size={17} /><div><strong>Ready means SSH is verified.</strong><p>Connect once in your terminal and verify the machine’s fingerprint. Use your existing SSH key or agent, then Check SSH. Keep Tailscale running for Tailscale routes. Drop items on a ready machine or press Send to transfer them.</p></div></div>
+          <div className="settings-note"><KeyRound size={17} /><div><strong>Ready means SSH is verified.</strong><p>Use a machine’s Access button to connect with an SSH key, set one up with a password used once, or securely save a password. SSH must already be running, and the machine’s fingerprint must be trusted. Keep Tailscale running for Tailscale routes. Drop items on a ready machine or press Send to transfer them.</p></div></div>
           {!isDemo && <div className="settings-note"><MousePointer2 size={17} /><div><strong>A keyboard shortcut, too.</strong><p>{state.environment?.shortcutAvailable === false ? `The keyboard shortcut couldn’t register on this device. Open ${productName} from the tray. Escape tucks it away.` : `Press ⌘ / Ctrl + Shift + Space to show or hide ${productName}. Escape also hides it.`}</p></div></div>}
           <div className="settings-note"><Folder size={17} /><div><strong>A fresh folder on the Desktop.</strong><p>Each transfer gets its own folder inside the machine’s destination. Your shelf keeps the original items so you can send them again.</p></div></div>
           {state.environment?.wayland && <p className="settings-warning"><CircleAlert size={15} />Global cursor detection is limited on Wayland. Open {productName} from the tray or use its shortcut.</p>}

@@ -8,9 +8,10 @@ const crypto = require('node:crypto');
 const { execFile: nodeExecFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { validateClipboardPNG } = require('./clipboard.cjs');
+const { PasswordAuth, endpointKey, validatePassword } = require('./password-auth.cjs');
 
 const execFileAsync = promisify(nodeExecFile);
-const DEFAULT_SETTINGS = Object.freeze({ shakeEnabled: true, sensitivity: 'normal', sendImmediately: false, viewMode: 'expanded' });
+const DEFAULT_SETTINGS = Object.freeze({ shakeEnabled: true, sensitivity: 'strong', sendImmediately: false, viewMode: 'expanded' });
 const DEFAULT_DESTINATION = '~/Desktop';
 const PUBLIC_HOST_FIELDS = ['id', 'name', 'address', 'user', 'port', 'identityFile', 'sshAlias', 'route', 'source', 'destination', 'status', 'error', 'os', 'online'];
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -113,9 +114,11 @@ function classifySSHError(error) {
 }
 
 class DriftService {
-  constructor({ dataDir, onChange = () => {}, homeDir = os.homedir(), execFile = execFileAsync, platform = process.platform } = {}) {
+  constructor({ dataDir, onChange = () => {}, homeDir = os.homedir(), execFile = execFileAsync, platform = process.platform, safeStorage, passwordAuth, clock = Date.now } = {}) {
     if (!dataDir) throw new Error('Drift needs an application data directory.');
     this.dataDir = dataDir; this.homeDir = homeDir; this.onChange = onChange; this.executor = execFile; this.platform = platform;
+    this.passwordAuth = passwordAuth || new PasswordAuth({ dataDir, homeDir, platform, safeStorage, run: (...args) => this.run(...args) });
+    this.authenticationSetup = false; this.clock = clock; this.pendingClear = null; this.clearCleanup = []; this.clearUndoTimer = null;
     this.manualHosts = []; this.overrides = {}; this.hiddenHosts = []; this.transferring = false; this.scanPromise = null; this.probePromise = null;
     this.state = { hosts: [], items: [], history: [], settings: { ...DEFAULT_SETTINGS }, discovery: { warnings: [], lastScan: null }, environment: { platform, sshAvailable: false, tailscaleAvailable: false, wayland: platform === 'linux' && Boolean(process.env.WAYLAND_DISPLAY) } };
     this.initialized = this.load(); this.writeChain = Promise.resolve(); this.shelfMutation = Promise.resolve();
@@ -127,10 +130,15 @@ class DriftService {
       this.manualHosts = (saved.manualHosts || []).map(host => validateHost(host, { manual: true }));
       this.overrides = saved.overrides || {}; this.hiddenHosts = saved.hiddenHosts || [];
       this.state.items = (saved.items || []).filter(item => item && typeof item.id === 'string' && typeof item.path === 'string' && ['file', 'folder', 'text'].includes(item.kind)).slice(0, 500);
+      if (saved.pendingClear && Array.isArray(saved.pendingClear.items) && Number.isFinite(Date.parse(saved.pendingClear.expiresAt))) {
+        this.pendingClear = { id: String(saved.pendingClear.id || crypto.randomUUID()), expiresAt: new Date(Math.min(Date.parse(saved.pendingClear.expiresAt), this.clock() + 10000)).toISOString(), items: saved.pendingClear.items.filter(item => item && typeof item.id === 'string' && typeof item.path === 'string' && ['file', 'folder', 'text'].includes(item.kind)).slice(0, 500) };
+      }
+      this.clearCleanup = (Array.isArray(saved.clearCleanup) ? saved.clearCleanup : []).filter(item => this.ownedStagedPath(item)).slice(0, 2000);
       this.state.history = (saved.history || []).slice(0, 100).map(entry => entry.status === 'sending' ? { ...entry, status: 'failed', message: 'The app closed before this transfer finished. Check the destination before retrying.' } : entry);
       this.state.settings = { ...DEFAULT_SETTINGS, ...this.validSettings(saved.settings || {}) };
       this.state.hosts = clone(this.manualHosts);
     } catch (error) { if (error.code !== 'ENOENT') this.state.discovery.warnings.push('Saved settings could not be loaded: ' + messageFor(error)); }
+    this.scheduleClearUndo();
   }
   validSettings(patch) {
     const settings = {};
@@ -140,16 +148,23 @@ class DriftService {
     if ('sendImmediately' in patch) { if (typeof patch.sendImmediately !== 'boolean') throw new Error('Invalid send setting.'); settings.sendImmediately = patch.sendImmediately; }
     return settings;
   }
-  emit() { try { this.onChange(clone(this.state)); } catch {} }
+  decoratedState() {
+    const state = clone(this.state);
+    state.hosts = state.hosts.map(host => ({ ...host, ...this.passwordAuth.metadata(host) }));
+    state.environment.passwordStorageAvailable = this.passwordAuth.storageAvailable();
+    state.clearShelfUndo = this.pendingClear && Date.parse(this.pendingClear.expiresAt) > this.clock() ? { count: this.pendingClear.items.length, expiresAt: this.pendingClear.expiresAt } : null;
+    return state;
+  }
+  emit() { try { this.onChange(this.decoratedState()); } catch {} }
   async persist() {
-    const serialized = JSON.stringify({ version: 1, manualHosts: this.manualHosts, overrides: this.overrides, hiddenHosts: this.hiddenHosts, items: this.state.items, history: this.state.history.slice(0, 100), settings: this.state.settings }, null, 2);
+    const serialized = JSON.stringify({ version: 1, manualHosts: this.manualHosts, overrides: this.overrides, hiddenHosts: this.hiddenHosts, items: this.state.items, pendingClear: this.pendingClear, clearCleanup: this.clearCleanup, history: this.state.history.slice(0, 100), settings: this.state.settings }, null, 2);
     this.writeChain = this.writeChain.catch(() => {}).then(async () => {
       const temporary = path.join(this.dataDir, 'state-' + crypto.randomUUID() + '.tmp');
       await fs.writeFile(temporary, serialized, { mode: 0o600 }); await fs.rename(temporary, path.join(this.dataDir, 'state.json'));
     }); await this.writeChain;
   }
-  async getState() { await this.initialized; return clone(this.state); }
-  assertConfigurationIdle() { if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); }
+  async getState() { await this.initialized; await this.passwordAuth.initialized; return this.decoratedState(); }
+  assertConfigurationIdle() { if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); }
   mutateShelf(operation) {
     const next = this.shelfMutation.catch(() => {}).then(async () => {
       await this.initialized;
@@ -172,6 +187,8 @@ class DriftService {
   }
   async refreshHosts() {
     await this.initialized;
+    this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('Wait for the current transfer to finish before checking machines.');
     if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
     if (this.scanPromise) return this.scanPromise;
     if (this.probePromise) await this.probePromise;
@@ -254,23 +271,28 @@ class DriftService {
     if (host.sshAlias) args.push('-o', 'HostName=' + host.address);
     args.push(host.sshAlias || host.address); return args;
   }
-  async probeHosts() {
+  async probeHosts({ automatic = false } = {}) {
     await this.initialized;
+    this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('Wait for the current transfer to finish before checking machines.');
     if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
     if (this.probePromise) return this.probePromise;
     if (this.scanPromise) await this.scanPromise;
     if (!this.state.environment.sshAvailable) await this.refreshHosts();
     if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
     if (this.probePromise) return this.probePromise;
-    this.probePromise = this.checkHosts().finally(() => { this.probePromise = null; }); return this.probePromise;
+    this.probePromise = this.checkHosts({ automatic }).finally(() => { this.probePromise = null; }); return this.probePromise;
   }
-  async checkHosts() {
+  async checkHosts({ automatic = false } = {}) {
     const hosts = this.state.hosts.slice();
     await mapLimit(hosts, 4, async host => {
+      if (automatic && this.passwordAuth.metadata(host).hasSavedPassword) return;
       if (!host.user) { host.status = 'auth-required'; host.error = 'Add this machine’s SSH login username and authentication settings.'; this.emit(); return; }
       host.status = 'checking'; delete host.error; this.emit();
       try {
-        const result = await this.run('ssh', [...this.sshArgs(host), 'echo DRIFT_READY'], { timeout: 9000 });
+        const result = this.passwordAuth.metadata(host).hasSavedPassword
+          ? await this.passwordAuth.withPassword(host, session => session.exec('echo DRIFT_READY', 9000))
+          : await this.run('ssh', [...this.sshArgs(host), 'echo DRIFT_READY'], { timeout: 9000 });
         if (!result.stdout.includes('DRIFT_READY')) throw new Error('SSH connected but the remote shell did not accept a command.');
         host.status = 'ready'; delete host.error;
       } catch (error) { Object.assign(host, classifySSHError(error)); }
@@ -283,22 +305,26 @@ class DriftService {
   async saveHost(payload) {
     await this.initialized;
     this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('Wait for the current transfer to finish before editing machines.');
     const current = this.state.hosts.find(host => host.id === payload.id);
     const host = validateHost({ ...current, ...payload, source: current ? current.source : 'Manual', id: current ? current.id : 'manual-' + crypto.randomUUID(), status: 'unknown' }, { manual: true });
     if (current && current.source !== 'Manual') this.overrides[host.id] = Object.fromEntries(PUBLIC_HOST_FIELDS.filter(key => !['status', 'error', 'online', 'source'].includes(key)).map(key => [key, host[key]]));
     else { host.source = 'Manual'; this.manualHosts = [...this.manualHosts.filter(existing => existing.id !== host.id), host]; }
     this.hiddenHosts = this.hiddenHosts.filter(id => id !== host.id);
     this.state.hosts = [...this.state.hosts.filter(existing => existing.id !== host.id && identityFor(existing) !== identityFor(host)), host].sort((a, b) => a.name.localeCompare(b.name));
-    await this.persist(); this.emit(); return this.getState();
+    await this.persist();
+    if (current && endpointKey(current) !== endpointKey(host)) await this.passwordAuth.forget(current);
+    this.emit(); return this.getState();
   }
   async removeHost(id) {
     await this.initialized;
     this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('Wait for the current transfer to finish before removing machines.');
     const host = this.state.hosts.find(entry => entry.id === id); if (!host) return this.getState();
     if (host.source === 'Manual') this.manualHosts = this.manualHosts.filter(entry => entry.id !== id);
     else this.hiddenHosts = [...new Set([...this.hiddenHosts, id])];
     delete this.overrides[id]; this.state.hosts = this.state.hosts.filter(entry => entry.id !== id);
-    await this.persist(); this.emit(); return this.getState();
+    await this.persist(); await this.passwordAuth.forget(host); this.emit(); return this.getState();
   }
   enqueueFiles(paths) {
     return this.mutateShelf(async () => {
@@ -356,35 +382,97 @@ class DriftService {
       throw error;
     }
   }
+  ownedStagedPath(item) {
+    if (!item || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)) return null;
+    const expected = item.kind === 'text' ? path.join(this.dataDir, 'notes', item.id + '.txt') : item.clipboard === true && item.kind === 'file' ? path.join(this.dataDir, 'clipboard-images', item.id + '.png') : null;
+    return expected && item.path === expected ? expected : null;
+  }
+  retainedStagedPaths() { return new Set([...this.state.items, ...(this.pendingClear?.items || [])].map(item => item.path)); }
   async removeOwnedClipboardImage(item) {
-    if (!item || item.clipboard !== true || item.kind !== 'file' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.id)) return;
-    const ownedPath = path.join(this.dataDir, 'clipboard-images', item.id + '.png');
-    if (item.path === ownedPath) await fs.unlink(ownedPath).catch(() => {});
+    const owned = item?.clipboard === true ? this.ownedStagedPath(item) : null;
+    if (owned && !this.retainedStagedPaths().has(owned)) await fs.unlink(owned).catch(() => {});
+  }
+  scheduleClearUndo(retryDelay) {
+    clearTimeout(this.clearUndoTimer); this.clearUndoTimer = null;
+    if (!this.pendingClear && !this.clearCleanup.length) return;
+    const deadline = this.pendingClear ? Math.max(0, Date.parse(this.pendingClear.expiresAt) - this.clock()) : Infinity;
+    const delay = retryDelay ?? Math.min(deadline, this.clearCleanup.length ? 5000 : Infinity);
+    this.clearUndoTimer = setTimeout(() => { this.clearUndoTimer = null; this.expireClearUndo().catch(() => this.scheduleClearUndo(1000)); }, delay);
+    this.clearUndoTimer.unref?.();
+  }
+  cleanupEntries(items) {
+    const unique = new Map(this.clearCleanup.map(item => [item.path, item]));
+    for (const item of items) if (this.ownedStagedPath(item)) unique.set(item.path, item);
+    return [...unique.values()];
+  }
+  async drainClearCleanup() {
+    if (!this.clearCleanup.length) return;
+    const previous = this.clearCleanup; const retained = this.retainedStagedPaths(); const remaining = [];
+    for (const item of previous) {
+      const owned = this.ownedStagedPath(item);
+      if (!owned) continue;
+      if (retained.has(owned)) { remaining.push(item); continue; }
+      try { await fs.unlink(owned); } catch (error) { if (error.code !== 'ENOENT') remaining.push(item); }
+    }
+    if (remaining.length === previous.length) return;
+    this.clearCleanup = remaining;
+    try { await this.persist(); } catch (error) { this.clearCleanup = previous; throw error; }
+  }
+  expireClearUndo() {
+    return this.mutateShelf(async () => {
+      const beforePending = this.pendingClear; const beforeCleanup = this.clearCleanup;
+      if (this.pendingClear && Date.parse(this.pendingClear.expiresAt) <= this.clock()) {
+        const previous = this.pendingClear; const priorCleanup = this.clearCleanup;
+        this.clearCleanup = this.cleanupEntries(previous.items); this.pendingClear = null;
+        try { await this.persist(); } catch (error) { this.pendingClear = previous; this.clearCleanup = priorCleanup; throw error; }
+      }
+      try { await this.drainClearCleanup(); } finally { this.scheduleClearUndo(); }
+      if (beforePending !== this.pendingClear || beforeCleanup !== this.clearCleanup) this.emit();
+      return this.getState();
+    });
   }
   removeItem(id) {
     return this.mutateShelf(async () => {
       if (this.transferring) throw new Error('Wait for the current transfer to finish before removing shelf items.');
-      const previous = this.state.items;
-      const item = previous.find(entry => entry.id === id);
+      const previous = this.state.items; const item = previous.find(entry => entry.id === id);
       this.state.items = previous.filter(entry => entry.id !== id);
       try { await this.persist(); } catch (error) { this.state.items = previous; throw error; }
-      // Delete only staged content, and only after its removal is safely saved.
-      if (item && item.kind === 'text' && item.path.startsWith(path.join(this.dataDir, 'notes') + path.sep)) await fs.unlink(item.path).catch(() => {});
-      await this.removeOwnedClipboardImage(item);
+      const owned = this.ownedStagedPath(item);
+      if (owned && !this.retainedStagedPaths().has(owned)) await fs.unlink(owned).catch(() => {});
       this.emit(); return this.getState();
     });
   }
   clearItems() {
     return this.mutateShelf(async () => {
       if (this.transferring) throw new Error('Wait for the current transfer to finish before clearing the shelf.');
-      const previous = this.state.items;
+      if (!this.state.items.length) return this.getState();
+      const previous = this.state.items; const priorUndo = this.pendingClear; const priorCleanup = this.clearCleanup;
+      const cleanup = this.cleanupEntries(priorUndo?.items || []);
+      if (cleanup.length + previous.filter(item => this.ownedStagedPath(item)).length > 2000) throw new Error('Staged-file cleanup is still pending. Check app-folder permissions before clearing more items.');
+      this.clearCleanup = cleanup;
+      this.pendingClear = { id: crypto.randomUUID(), items: previous, expiresAt: new Date(this.clock() + 10000).toISOString() };
       this.state.items = [];
-      try { await this.persist(); } catch (error) { this.state.items = previous; throw error; }
-      for (const item of previous) {
-        if (item.kind === 'text' && item.path.startsWith(path.join(this.dataDir, 'notes') + path.sep)) await fs.unlink(item.path).catch(() => {});
-        await this.removeOwnedClipboardImage(item);
-      }
+      try { await this.persist(); } catch (error) { this.state.items = previous; this.pendingClear = priorUndo; this.clearCleanup = priorCleanup; throw error; }
+      // A later clear commits the previous undo batch only after the replacement is durable.
+      await this.drainClearCleanup().catch(() => {}); this.scheduleClearUndo();
       this.emit(); return this.getState();
+    });
+  }
+  undoClear() {
+    return this.mutateShelf(async () => {
+      if (this.transferring) throw new Error('Wait for the current transfer to finish before restoring cleared items.');
+      const pending = this.pendingClear;
+      if (!pending || Date.parse(pending.expiresAt) <= this.clock()) throw new Error('The 10-second undo window has ended.');
+      const previous = this.state.items; const existingPaths = new Set(previous.map(item => item.path)); const existingIds = new Set(previous.map(item => item.id));
+      const restored = pending.items.filter(item => !existingPaths.has(item.path) && !existingIds.has(item.id));
+      if (previous.length + restored.length > 500) throw new Error('Undo would exceed the 500-item shelf limit. Remove some newly added items before the undo window ends.');
+      const priorCleanup = this.clearCleanup;
+      this.clearCleanup = this.cleanupEntries(pending.items.filter(item => !restored.includes(item)));
+      this.state.items = [...restored, ...previous]; this.pendingClear = null;
+      try { await this.persist(); } catch (error) { this.state.items = previous; this.pendingClear = pending; this.clearCleanup = priorCleanup; throw error; }
+      this.scheduleClearUndo(); this.emit();
+      const restoredItemIds = restored.map(item => item.id);
+      return { ...await this.getState(), restoredItemIds, enqueuedItemIds: restoredItemIds };
     });
   }
   async checkSource(item, windows = false) {
@@ -420,22 +508,66 @@ class DriftService {
     const script = `$ErrorActionPreference='Stop'; $base=(${expression}); if([string]::IsNullOrWhiteSpace($base)){throw 'The destination folder could not be resolved.'}; [IO.Directory]::CreateDirectory($base) | Out-Null; $target=Join-Path -Path $base -ChildPath ${psQuote(batch)}; if(Test-Path -LiteralPath $target){throw 'This transfer folder already exists.'}; [IO.Directory]::CreateDirectory($target) | Out-Null; [Console]::WriteLine('DRIFT_DEST='+[IO.Path]::GetFullPath($target).Replace('\\','/'))`;
     return 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + Buffer.from(script, 'utf16le').toString('base64');
   }
-  async send({ hostId, itemIds } = {}) {
+  async send(payload) { return this.sendOne(payload); }
+  async sendMany({ hostIds, itemIds } = {}) {
+    await this.initialized; this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('A transfer is already running. Wait for its receipts before sending again.');
+    if (!Array.isArray(hostIds) || !hostIds.length || hostIds.length > 20 || new Set(hostIds).size !== hostIds.length || !hostIds.every(id => typeof id === 'string')) throw new Error('Choose between 1 and 20 different machines.');
+    if (!Array.isArray(itemIds) || !itemIds.length || itemIds.length > 500 || new Set(itemIds).size !== itemIds.length || !itemIds.every(id => typeof id === 'string')) throw new Error('Choose between 1 and 500 different shelf items.');
+    const selectedHostIds = hostIds.slice(); const exactIds = itemIds.slice();
+    this.transferring = true;
+    const batchId = crypto.randomUUID();
+    try {
+      // Calls already waiting on another discovery phase can hand off to a new phase.
+      // Keep the batch guard while draining every pre-existing scan/probe phase.
+      while (this.scanPromise || this.probePromise) {
+        const settled = await Promise.allSettled([this.scanPromise, this.probePromise].filter(Boolean));
+        const failed = settled.find(result => result.status === 'rejected');
+        if (failed) throw new Error('A machine check did not finish successfully. Check your machines again before sending.');
+      }
+      const targets = selectedHostIds.map(id => {
+        const host = this.state.hosts.find(entry => entry.id === id);
+        if (!host) throw new Error('One of the selected machines is no longer available. Review your selection.');
+        return { ...host };
+      });
+      if (!exactIds.every(id => this.state.items.some(item => item.id === id))) throw new Error('One of the selected items is no longer on the shelf.');
+      await mapLimit(targets, 2, async host => {
+        try { await this.sendOne({ hostId: host.id, itemIds: exactIds }, { withinBatch: true, batchId }); }
+        catch (error) {
+          const existing = this.state.history.find(receipt => receipt.batchId === batchId && receipt.hostId === host.id);
+          if (!existing) this.state.history.unshift({ id: crypto.randomUUID(), batchId, hostId: host.id, hostName: host.name, itemCount: exactIds.length, itemIds: exactIds.slice(), status: 'failed', message: messageFor(error), timestamp: new Date().toISOString() });
+          else if (existing.status === 'sending') { existing.status = 'failed'; existing.message = messageFor(error); }
+          this.state.history = this.state.history.slice(0, 100);
+          // A disk failure must not release the batch lock while another worker is still sending.
+          // The final persistence attempt happens only after every destination has settled.
+          await this.persist().catch(() => {}); this.emit();
+        }
+      });
+    } finally { this.transferring = false; await this.persist(); this.emit(); }
+    return this.getState();
+  }
+  async sendOne({ hostId, itemIds } = {}, { withinBatch = false, batchId } = {}) {
     await this.initialized;
     this.assertConfigurationIdle();
-    if (this.transferring) throw new Error('A transfer is already running. Wait for its receipt before sending again.');
+    if (this.transferring && !withinBatch) throw new Error('A transfer is already running. Wait for its receipt before sending again.');
     const current = this.state.hosts.find(host => host.id === hostId); if (!current) throw new Error('Choose a machine first.');
     const host = validateHost(current, { manual: true });
     if (current.status !== 'ready') throw new Error('Check this machine’s SSH connection before sending.');
-    if (host.os === 'windows' && this.sshMajor < 9) throw new Error('Sending to Windows needs OpenSSH 9 or newer on this device so file paths use SFTP safely. Update the OpenSSH client and check again.');
+    if (host.os === 'windows' && this.sshMajor < 9 && !this.passwordAuth.metadata(host).hasSavedPassword) throw new Error('Sending to Windows needs OpenSSH 9 or newer on this device so file paths use SFTP safely. Update the OpenSSH client and check again.');
     if (!Array.isArray(itemIds) || !itemIds.length) throw new Error('Add or select at least one shelf item to send.');
     const wanted = new Set(itemIds); const items = this.state.items.filter(item => wanted.has(item.id));
     if (items.length !== wanted.size) throw new Error('One of the selected items is no longer on the shelf.');
     this.transferring = true;
-    const receipt = { id: crypto.randomUUID(), hostName: host.name, itemCount: items.length, itemIds: items.map(item => item.id), status: 'sending', message: 'Preparing the transfer…', timestamp: new Date().toISOString() };
+    const receipt = { id: crypto.randomUUID(), ...(batchId ? { batchId } : {}), hostId: host.id, hostName: host.name, itemCount: items.length, itemIds: items.map(item => item.id), status: 'sending', message: 'Preparing the transfer…', timestamp: new Date().toISOString() };
     this.state.history.unshift(receipt); this.state.history = this.state.history.slice(0, 100); this.emit();
     try {
+      const perform = async passwordSession => {
       await this.persist();
+      if (withinBatch) {
+        // Recheck this destination immediately before its transfer, after any queue wait.
+        const ready = passwordSession ? await passwordSession.exec('echo DRIFT_READY', 9000) : await this.run('ssh', [...this.sshArgs(host), 'echo DRIFT_READY'], { timeout: 9000 });
+        if (!ready.stdout.includes('DRIFT_READY')) throw new Error('This machine did not pass its fresh SSH connection check.');
+      }
       for (const item of items) {
         await this.checkSource(item, host.os === 'windows');
         if (host.os === 'windows' && invalidWindowsName(item.name)) throw new Error(`${item.name} is not a valid filename on Windows. Rename it before sending.`);
@@ -444,7 +576,7 @@ class DriftService {
       const base = host.destination === '~' ? '"$HOME"' : host.destination.startsWith('~/') ? '"$HOME"/' + quoteRemote(host.destination.slice(2)) : quoteRemote(host.destination);
       const posixScript = `umask 077; base=${base}; mkdir -p -- "$base" && target="$base"/${quoteRemote(batch)} && mkdir -- "$target" && printf '\\nDRIFT_DEST=%s\\n' "$target"`;
       const script = host.os === 'windows' ? this.windowsDestinationCommand(host.destination, batch) : posixScript;
-      const result = await this.run('ssh', [...this.sshArgs(host), script], { timeout: 15000 });
+      const result = passwordSession ? await passwordSession.exec(script) : await this.run('ssh', [...this.sshArgs(host), script], { timeout: 15000 });
       const match = result.stdout.match(/(?:^|\n)DRIFT_DEST=([^\r\n]+)/); if (!match || (host.os === 'windows' ? !/^[A-Za-z]:[\\/]/.test(match[1]) : !match[1].startsWith('/')) || hasControl(match[1])) throw new Error('The remote machine did not return a usable destination path.');
       receipt.destination = match[1]; const usedNames = new Set();
       for (let index = 0; index < items.length; index++) {
@@ -460,15 +592,80 @@ class DriftService {
         const scpHost = host.sshAlias || host.address;
         const targetHost = scpHost.includes(':') ? '[' + scpHost + ']' : scpHost;
         args.push(item.path, host.user + '@' + targetHost + ':' + (host.os === 'windows' ? remotePath : quoteRemote(remotePath)));
-        await this.run('scp', args, { timeout: 60 * 60 * 1000 });
+        if (passwordSession) await passwordSession.upload(item.path, remotePath);
+        else await this.run('scp', args, { timeout: 60 * 60 * 1000 });
       }
+      };
+      if (this.passwordAuth.metadata(host).hasSavedPassword) await this.passwordAuth.withPassword(host, perform);
+      else await perform();
       receipt.status = 'sent'; receipt.message = `${items.length} ${items.length === 1 ? 'item' : 'items'} delivered to ${receipt.destination}. Your shelf is kept for reuse.`;
     } catch (error) {
       receipt.status = 'failed'; receipt.message = messageFor(error);
       if (receipt.destination) receipt.message += ` Some files may already be in ${receipt.destination}; retrying creates a new folder.`;
-      if (/host key|host identification/i.test(receipt.message)) { current.status = 'auth-required'; current.error = 'Verify this machine’s SSH fingerprint in your terminal before retrying.'; }
-    } finally { this.transferring = false; await this.persist(); this.emit(); }
+      if (/host key|host identification|fingerprint|password.*rejected|attempts are paused/i.test(receipt.message)) {
+        const live = this.state.hosts.find(entry => entry.id === current.id && identityFor(entry) === identityFor(host));
+        if (live) { live.status = 'auth-required'; live.error = /password/i.test(receipt.message) ? receipt.message : 'Verify this machine’s SSH fingerprint in your terminal before retrying.'; }
+      }
+    } finally { if (!withinBatch) this.transferring = false; await this.persist(); this.emit(); }
     return this.getState();
+  }
+  async configureAccess({ hostId, mode, password } = {}) {
+    await this.initialized; await this.passwordAuth.initialized;
+    this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('Wait for the transfer to finish before changing machine access.');
+    if (!['once', 'saved'].includes(mode)) throw new Error('Choose one-time setup or a saved password.');
+    validatePassword(password);
+    this.authenticationSetup = true;
+    try {
+      await Promise.all([this.scanPromise, this.probePromise].filter(Boolean));
+      const current = this.state.hosts.find(host => host.id === hostId);
+      if (!current) throw new Error('Save and choose a machine before configuring access.');
+      const host = validateHost(current, { manual: true });
+      if (mode === 'saved') {
+        if (!this.passwordAuth.storageAvailable()) throw new Error('Secure password storage is unavailable. Unlock your operating system keychain, or choose one-time password setup instead.');
+        await this.passwordAuth.withPassword(host, async session => {
+          const result = await session.exec('echo DRIFT_READY', 9000);
+          if (!result.stdout.includes('DRIFT_READY')) throw new Error('SSH connected but the remote shell did not accept a command.');
+        }, password);
+        await this.passwordAuth.save(host, password);
+      } else {
+        const identityFile = await this.passwordAuth.bootstrap(host, password, async file => {
+          const args = this.sshArgs({ ...host, identityFile: file });
+          // Key-only verification must not succeed using another agent identity or multiplexed session.
+          args.unshift('-o', 'IdentityAgent=none', '-o', 'ControlMaster=no', '-o', 'ControlPath=none', '-o', 'PreferredAuthentications=publickey', '-o', 'PasswordAuthentication=no', '-o', 'KbdInteractiveAuthentication=no');
+          const result = await this.run('ssh', [...args, 'echo DRIFT_READY'], { timeout: 12000 });
+          if (!result.stdout.includes('DRIFT_READY')) throw new Error('Key verification did not complete.');
+        });
+        const updated = { ...host, identityFile, status: 'ready' };
+        const previousManualHosts = this.manualHosts; const previousOverrides = this.overrides;
+        if (host.source === 'Manual') this.manualHosts = this.manualHosts.map(entry => entry.id === host.id ? updated : entry);
+        else this.overrides = { ...this.overrides, [host.id]: { ...this.overrides[host.id], identityFile } };
+        try { await this.persist(); }
+        catch {
+          this.manualHosts = previousManualHosts; this.overrides = previousOverrides;
+          throw new Error('The new SSH key works, but the machine settings could not be saved. Your previous access settings remain active. The generated key was retained; free space or fix app-folder permissions and retry setup.');
+        }
+        Object.assign(current, updated);
+        await this.passwordAuth.forget(host);
+        await this.passwordAuth.completeBootstrap?.(host);
+      }
+      current.status = 'ready'; delete current.error;
+      this.emit(); return this.getState();
+    } finally { password = undefined; this.authenticationSetup = false; }
+  }
+  async forgetPassword(hostId) {
+    await this.initialized; this.assertConfigurationIdle();
+    if (this.transferring) throw new Error('Wait for the transfer to finish before removing its password.');
+    const host = this.state.hosts.find(entry => entry.id === hostId);
+    if (!host) throw new Error('Choose a saved machine first.');
+    this.authenticationSetup = true;
+    try {
+      await Promise.all([this.scanPromise, this.probePromise].filter(Boolean));
+      await this.passwordAuth.forget(host);
+      const live = this.state.hosts.find(entry => entry.id === hostId && endpointKey(entry) === endpointKey(host));
+      if (live) { live.status = 'unknown'; delete live.error; }
+      this.emit(); return this.getState();
+    } finally { this.authenticationSetup = false; }
   }
   async updateSettings(patch) { await this.initialized; this.assertConfigurationIdle(); this.state.settings = { ...this.state.settings, ...this.validSettings(patch) }; await this.persist(); this.emit(); return this.getState(); }
 }

@@ -6,7 +6,7 @@ class ShakeDetector {
   constructor() {
     this.samples = [];
     this.lastTrigger = -Infinity;
-    this.sensitivity = 'normal';
+    this.sensitivity = 'strong';
   }
   reset() { this.samples = []; }
   setSensitivity(value) {

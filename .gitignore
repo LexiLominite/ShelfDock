@@ -11,3 +11,10 @@ personal-config.json
 *.pem
 *.key
 SHA256SUMS.txt
+
+# Runtime credential and clipboard stores must never enter source control.
+password-vault.json
+clipboard-history/
+ssh-keys/
+
+tunnels.json

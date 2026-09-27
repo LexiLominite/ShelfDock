@@ -1,7 +1,7 @@
 {
   "name": "dropharbor",
   "productName": "DropHarbor",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Shake to collect. Drop onto a machine to send.",
   "author": "LexiLominite",
   "private": true,
@@ -20,7 +20,8 @@
   "dependencies": {
     "lucide-react": "1.48.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "ssh2": "1.17.0"
   },
   "devDependencies": {
     "electron": "44.4.5",
@@ -36,7 +37,10 @@
     "files": [
       "dist/**/*",
       "desktop/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/ssh2/lib/protocol/crypto/build/**/*",
+      "!node_modules/cpu-features/**/*",
+      "!node_modules/nan/**/*"
     ],
     "mac": {
       "category": "public.app-category.utilities",

@@ -79,7 +79,7 @@ async function controller(options = {}) {
     async refreshHosts() { return this.state; }
     async probeHosts() { return this.state; }
   }
-  let workerOptions;
+  let workerOptions, historyOptions;
   const modules = {
     '../package.json': { productName: options.productName || 'DropHarbor' },
     electron,
@@ -91,6 +91,8 @@ async function controller(options = {}) {
     './clipboard.cjs': { captureClipboard: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
     './config.cjs': { createConfig: () => ({}), importConfiguration: async () => initialState },
     './migrate.cjs': { migrateLegacyData: async () => undefined },
+    './tunnels.cjs': { TunnelManager: class { constructor() { this.initialized = Promise.resolve(); } async getState() { return { active: [], history: [] }; } async stop(id) { record('tunnelStop', id); } async shutdown() { record('tunnelsShutdown'); } } },
+    './clipboard-history.cjs': { ClipboardHistory: class { constructor(options) { historyOptions = options; this.initialized = Promise.resolve(); } async tick() {} } },
     './worker.cjs': { acquireWorker: async args => {
       workerOptions = args; record('workerAcquire', args.background);
       if (options.workerError) throw new Error(options.workerError);
@@ -117,7 +119,7 @@ async function controller(options = {}) {
     assert.ok(poll, 'normal operation installs cursor sampling');
     for (const x of [0, 50, 130, 50, 0, 60, 140, 60, 0, 60, 150]) { clock += 32; cursor = { x: 300 + x, y: 200 }; poll.callback(); }
   };
-  return { app, calls, windows, trays, timers, shortcuts, errors, invoke, shake, workerOptions, service: fakeService, advance: milliseconds => { clock += milliseconds; } };
+  return { app, calls, windows, trays, timers, shortcuts, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, advance: milliseconds => { clock += milliseconds; } };
 }
 
 test('actual controller shows on a shake and hides on a later shake while respecting cooldown', async () => {
@@ -211,4 +213,38 @@ test('edition branding preserves the shared worker and existing data identity', 
     if (sharedRuntime) assert.equal(c.workerOptions.runtimeDir, sharedRuntime);
     sharedRuntime = c.workerOptions.runtimeDir;
   }
+});
+
+test('connection setup blocks mutations but still allows hiding and releasing interaction', async () => {
+  const c = await controller({ argv: ['--background'] });
+  c.service.authenticationSetup = true;
+  await assert.rejects(c.invoke('saveHost', {}), /connection setup to finish/);
+  await assert.rejects(c.invoke('configureAccess', { hostId: 'example', mode: 'saved', password: 'fixture' }), /connection setup to finish/);
+  await c.invoke('setInteraction', { dragging: false, editing: false });
+  await c.invoke('hideWindow');
+  assert.equal(c.windows[0].isVisible(), false);
+  assert.equal(c.errors.length, 0);
+});
+
+test('hidden search focus permits clipboard monitoring but hidden password editing remains private', async () => {
+  const c = await controller({argv:['--background']});
+  await c.invoke('setInteraction',{editing:true});
+  assert.equal(c.historyOptions.isBlocked(),false,'hidden non-sensitive fields must not pause history indefinitely');
+  c.windows[0].show(); assert.equal(c.historyOptions.isBlocked(),true);
+  c.windows[0].hide(); await c.invoke('setInteraction',{editing:true,sensitiveEditing:true});
+  assert.equal(c.historyOptions.isBlocked(),true,'a hidden password form remains protected');
+  await c.invoke('setInteraction',{editing:false,sensitiveEditing:false});
+  assert.equal(c.historyOptions.isBlocked(),false);
+  c.service.authenticationSetup=true; assert.equal(c.historyOptions.isBlocked(),true);
+});
+
+test('forwarding setup blocks connection mutations but permits status and Stop', async () => {
+  const c=await controller({argv:['--background']}); c.service.tunnelSetup=1;
+  await assert.rejects(c.invoke('saveHost',{}),/forwarding setup/); await c.invoke('getTunnels'); await c.invoke('stopTunnel','fixture');
+  c.service.authenticationSetup=true; await c.invoke('stopTunnel','fixture'); c.service.configurationImport=true; await c.invoke('stopTunnel','fixture');
+  assert.equal(c.calls.filter(call=>call.type==='tunnelStop').length,3);
+});
+test('quitting closes owned tunnels before releasing the worker lock', async()=>{
+  const c=await controller(); let prevented=false; c.app.emit('before-quit',{preventDefault(){prevented=true;}}); await flush(); await flush();
+  assert.equal(prevented,true); const types=c.calls.map(call=>call.type); assert.ok(types.indexOf('tunnelsShutdown')<types.indexOf('workerClose')); assert.ok(types.includes('quit'));
 });

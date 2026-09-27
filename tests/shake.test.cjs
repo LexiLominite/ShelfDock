@@ -30,3 +30,12 @@ test('vertical shake also works', () => {
   const d = new ShakeDetector(), p = [0, 50, 130, 50, 0, 60, 140, 60, 0, 60, 150];
   assert.equal(p.some((y, i) => d.add({ x: 0, y }, i * 30)), true);
 });
+
+test('More deliberate is default and rejects movement accepted by Balanced', () => {
+  const points = [0, 50, 110, 50, 0, 50, 110, 50, 0, 50, 110];
+  const strict = new ShakeDetector();
+  assert.equal(strict.sensitivity, 'strong');
+  assert.equal(exercise(points, 30, strict), false);
+  const balanced = new ShakeDetector(); balanced.setSensitivity('normal');
+  assert.equal(exercise(points, 30, balanced), true);
+});

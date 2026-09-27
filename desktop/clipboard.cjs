@@ -50,6 +50,11 @@ function parseFileURIs(text, platform = process.platform) {
   return paths;
 }
 
+function isNonFileURIList(text) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line && !line.startsWith('#'));
+  return lines.length > 0 && lines.every(line => { try { return new URL(line).protocol !== 'file:'; } catch { return false; } });
+}
+
 async function readBytes(item, type, limit = MAX_CLIPBOARD_BYTES) {
   const blob = await item.getType(type);
   if (!blob || typeof blob.arrayBuffer !== 'function' || !Number.isFinite(blob.size)) throw new Error('This clipboard format could not be read.');
@@ -76,10 +81,11 @@ async function captureClipboard({ clipboard, service, platform = process.platfor
   const fileItems = matching('text/uri-list');
   if (fileItems.length) {
     const files = [];
-    for (const item of fileItems) files.push(...parseFileURIs(await readText(item, 'text/uri-list', MAX_URI_BYTES), platform));
+    const lists = await Promise.all(fileItems.map(item => readText(item, 'text/uri-list', MAX_URI_BYTES)));
+    if (!lists.every(isNonFileURIList)) for (const list of lists) files.push(...parseFileURIs(list, platform));
     const unique = [...new Set(files)];
     if (unique.length > 500) throw new Error('Copy at most 500 files or folders at once.');
-    return service.enqueueFiles(unique);
+    if (unique.length) return service.enqueueFiles(unique);
   }
   const image = matching('image/png')[0];
   if (image) return service.enqueueClipboardImage(validateClipboardPNG(await readBytes(image, 'image/png')));
@@ -88,4 +94,4 @@ async function captureClipboard({ clipboard, service, platform = process.platfor
   throw new Error('Copy plain text, a screenshot/image, or local files first. This clipboard format is not supported.');
 }
 
-module.exports = { captureClipboard, parseFileURIs, validateClipboardPNG, MAX_CLIPBOARD_BYTES };
+module.exports = { captureClipboard, parseFileURIs, isNonFileURIList, validateClipboardPNG, MAX_CLIPBOARD_BYTES };

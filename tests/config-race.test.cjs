@@ -52,3 +52,13 @@ test('a refresh waiting on an active probe rechecks the import guard before star
   await tick(); service.configurationImport = true; finishProbe(); await rejection;
   assert.deepEqual(calls, []); assert.deepEqual(emissions, []);
 });
+
+test('configuration import does not change endpoints during password or key setup', async t => {
+  const { service, calls } = await fixture(t);
+  const before = await service.getState();
+  service.authenticationSetup = true;
+  await assert.rejects(importConfiguration(service, importedConfig), /connection setup to finish/);
+  assert.deepEqual(await service.getState(), before);
+  assert.deepEqual(calls, []);
+  assert.equal(service.configurationImport, undefined);
+});

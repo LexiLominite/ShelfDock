@@ -1,4 +1,22 @@
-# DropHarbor / lex-drift v0.2.2 verification
+# DropHarbor / lex-drift v0.3.0 verification
+
+This version adds an equally prominent encrypted Clipboard workspace, one-time and saved password access, multi-machine sends, local/remote SSH forwarding with saved history/notes, and More deliberate defaults. All 148 automated tests and the production renderer build passed for this revision. The release verification compares packaged source and architectures, checks archive integrity, and verifies uploaded SHA-256 hashes.
+
+- Clear shelf Undo has nine backend regressions covering exact restoration, new arrivals, expiry, original-file preservation, repeated clears, failed-save rollback, restart recovery, retained staged-file ownership, capacity, and concurrency. Headless UI checks verify the countdown, action across workspaces, exact selection, expiry, and retry without sending.
+- Headless renderer checks exercise password clearing, failed setup retries, secure-storage availability, saving/forgetting passwords, Clipboard opt-in and pause controls, safe HTML-as-text preview, keyboard isolation, snippets, retention preferences, exact two-item/two-machine batch selection, and all three view sizes.
+- A loopback-only real SSH server test exercises password authentication, hashed known_hosts, non-destructive POSIX public-key installation, generated private-key permissions, and actual OpenSSH key-only authentication. This does not establish live remote or Windows bootstrap validation.
+- Backend regressions cover encrypted password persistence, trusted host-key enforcement, failed-password lockout protection, key recovery after uncertain writes, settings rollback after failed persistence, SFTP exclusive writes, and bounded concurrent batch delivery with partial failures and discovery synchronization.
+- Clipboard-history regressions cover zero background reads while disabled/paused, source privacy markers, AES-GCM encrypted persistence and restart, corrupt/missing-key fail-closed recovery, deduplication without repeated writes/emissions, favourite retention/capacity, clearing without recapture, rich/plain copy, and Add to Transfers without sending.
+- Forwarding tests carry real bytes through temporary localhost SSH servers using native OpenSSH and saved-password SSH in both directions. They verify owned process/listener cleanup, refusal of unexpected public remote bindings, endpoint-bound repeat history, no automatic restart, and readiness timeouts. Controller tests keep Stop available during setup and close tunnels before releasing the singleton lock.
+- Clipboard review fixes keep full-text searches in the backend, send metadata-only snapshots, serialize/encrypt history outside the UI thread, avoid disk rewrites on copy, and preserve decrypted history when preferences or expiry writes fail. Copied web links with URI-list and text representations correctly use text while remote file URIs remain refused.
+- The production dependency audit reported zero known vulnerabilities.
+- Grok 4.6 provided bounded source-only reviews and separate public-web product research. See GROK_REVIEW.md and PRODUCT_DESIGN.md. Actual model response metadata identifies the requested model's backing implementation as grok-4.6-build.
+
+Native Windows/Linux sender behavior, native Windows bootstrap/receiving, and the new native clipboard-history interaction remain unvalidated on those devices. Builds remain unsigned private prereleases. Clipboard history starts off, known privacy markers cannot detect every secret, and polling/compositor limits may miss rapid clipboard changes. Neither direct paste, native source-app exclusions, OCR, nor automatic clipboard synchronization is included.
+
+Clear shelf offers a 10-second Undo, restoring the exact cleared items alongside anything added afterward. Original files remain on disk; app-created text/image staging is cleaned up only after the recovery window expires. A pending clear survives an app restart for the remainder of that same window.
+
+## Earlier validated evidence: v0.2.2
 
 Version 0.2.2 names the standard edition DropHarbor, retains lex-drift for personal builds, and changes the interface to the lexilominite.com palette and aligns the native startup background. All 83 automated tests and the production build passed for this version. Platform evidence below includes earlier v0.2.1 testing where indicated.
 

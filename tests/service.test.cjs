@@ -118,6 +118,7 @@ test('file and text shelf is durable, deduplicates files, and only deletes text 
   const restored = new DriftService({ dataDir: data, execFile: executor, platform: 'linux' });
   assert.equal((await restored.getState()).items.length, 2);
   await restored.clearItems();
+  restored.clock = () => Date.now() + 10001; await restored.expireClearUndo();
   await assert.rejects(fs.stat(staged), { code: 'ENOENT' });
   assert.equal(await fs.readFile(file, 'utf8'), 'user content');
   state.items.push({ id: 'not-real' });
@@ -314,4 +315,91 @@ test('discovery preserves checked failures until a new check and offline peers o
   const scanned=await service.refreshHosts();assert.equal(scanned.hosts[0].status,'offline');assert.match(scanned.hosts[0].error,/refused/);
   reachable=true;await service.probeHosts();assert.equal((await service.getState()).hosts[0].status,'ready');
   tailscale.Peer.peer.Online=false;assert.equal((await service.refreshHosts()).hosts[0].status,'offline');
+});
+
+test('multi-machine transfer runs at most two destinations concurrently, preserves exact items, and separates failures', async t => {
+  let release; let entered; let active = 0; let maximum = 0; let transfers = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const running = new Promise(resolve => { entered = resolve; });
+  const { service, calls } = await fixture(t, { executor: async (command, args) => {
+    if (command !== 'scp') return undefined;
+    transfers++; active++; maximum = Math.max(maximum, active);
+    if (active === 2) entered();
+    try { await gate; if (args.at(-1).includes('two.invalid')) throw new Error('Connection reset by peer'); return { stdout: '', stderr: '' }; }
+    finally { active--; }
+  } });
+  for (const name of ['one', 'two', 'three', 'offline']) await readyHost(service, { name, address: name + '.invalid' });
+  service.state.hosts.find(host => host.name === 'offline').status = 'offline';
+  await service.enqueueText('first selected item'); await service.enqueueText('second selected item'); await service.enqueueText('unselected item');
+  const before = await service.getState(); const itemIds = before.items.slice(0, 2).map(item => item.id); const hostIds = before.hosts.map(host => host.id);
+  calls.length = 0;
+  const sending = service.sendMany({ hostIds, itemIds }); await running;
+  assert.equal(service.transferring, true); assert.equal(maximum, 2);
+  await assert.rejects(service.sendMany({ hostIds, itemIds }), /already running/);
+  await assert.rejects(service.send({ hostId: hostIds[0], itemIds }), /already running/);
+  await assert.rejects(service.removeItem(itemIds[0]), /transfer/);
+  await assert.rejects(service.saveHost({ id: hostIds[0], name: 'edited' }), /transfer/);
+  await assert.rejects(service.refreshHosts(), /transfer/);
+  await service.enqueueText('arrived after confirmation');
+  release(); const state = await sending;
+  assert.equal(service.transferring, false); assert.equal(maximum, 2); assert.equal(state.items.length, 4);
+  assert.equal(state.history.length, 4); assert.equal(state.history.filter(receipt => receipt.status === 'sent').length, 2);
+  assert.equal(state.history.filter(receipt => receipt.status === 'failed').length, 2);
+  for (const receipt of state.history) assert.deepEqual(receipt.itemIds, itemIds);
+  assert.equal(new Set(state.history.map(receipt => receipt.batchId)).size, 1);
+  assert.equal(calls.filter(call => call.command === 'ssh' && call.args.at(-1) === 'echo DRIFT_READY').length, 3);
+  assert.equal(transfers, 5); // Two files to each successful target; the other fails on its first file.
+});
+
+test('multi-machine preflight rejects stale or duplicate selections before starting a transfer', async t => {
+  const { service, calls } = await fixture(t);
+  const hostId = await readyHost(service); await service.enqueueText('selected');
+  const itemId = (await service.getState()).items[0].id; calls.length = 0;
+  for (const payload of [
+    { hostIds: [hostId, hostId], itemIds: [itemId] },
+    { hostIds: [hostId], itemIds: [itemId, itemId] },
+    { hostIds: [hostId, 'stale-host'], itemIds: [itemId] },
+    { hostIds: [hostId], itemIds: ['stale-item'] },
+    { hostIds: [], itemIds: [itemId] }
+  ]) await assert.rejects(service.sendMany(payload));
+  assert.equal(calls.length, 0); assert.equal(service.transferring, false); assert.equal((await service.getState()).history.length, 0);
+});
+
+test('multi-machine sending waits for an already active probe before checking readiness', async t => {
+  let hold = false; let release; let entered;
+  const gate = new Promise(resolve => { release = resolve; }); const probing = new Promise(resolve => { entered = resolve; });
+  const { service, calls } = await fixture(t, { executor: async (command, args) => {
+    if (hold && command === 'ssh' && args.at(-1) === 'echo DRIFT_READY') { entered(); await gate; return { stdout: 'DRIFT_READY\n', stderr: '' }; }
+    return undefined;
+  } });
+  const id = await readyHost(service); await service.enqueueText('send after the active probe');
+  const itemIds = (await service.getState()).items.map(item => item.id);
+  hold = true; calls.length = 0;
+  const checking = service.probeHosts(); await probing;
+  assert.equal(service.state.hosts[0].status, 'checking');
+  const sending = service.sendMany({ hostIds: [id], itemIds });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.transferring, true); assert.equal(service.state.history.length, 0); assert.equal(calls.filter(call => call.command === 'scp').length, 0);
+  release(); await checking;
+  const state = await sending; assert.equal(state.history[0].status, 'sent'); assert.equal(service.transferring, false);
+});
+
+test('multi-machine preflight uses the final host list after an in-flight scan replaces it', async t => {
+  let hold = false; let release; let entered;
+  const gate = new Promise(resolve => { release = resolve; }); const scanning = new Promise(resolve => { entered = resolve; });
+  const { service, calls } = await fixture(t, { executor: async (command) => {
+    if (hold && command === 'tailscale') { entered(); await gate; return { stdout: '{"Peer":{}}', stderr: '' }; }
+    return undefined;
+  } });
+  const id = await readyHost(service); await service.enqueueText('must not go to a vanished target');
+  const itemIds = (await service.getState()).items.map(item => item.id);
+  // Model a route whose discovery source disappeared while a scan was running.
+  service.manualHosts = []; hold = true; calls.length = 0;
+  const refresh = service.refreshHosts(); await scanning;
+  const sending = service.sendMany({ hostIds: [id], itemIds });
+  const rejected = assert.rejects(sending, /no longer available/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.transferring, true); assert.equal(calls.filter(call => call.command === 'scp').length, 0);
+  release(); await refresh; await rejected;
+  assert.equal(calls.filter(call => call.command === 'scp').length, 0); assert.equal(service.transferring, false); assert.equal(service.state.hosts.length, 0);
 });

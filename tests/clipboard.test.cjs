@@ -86,7 +86,8 @@ test('clearing a clipboard image and ordinary PNG deletes only the staged copy',
   const original = path.join(directory, 'original.png'); await fs.writeFile(original, PNG);
   await service.enqueueFiles([original]); const state = await service.enqueueClipboardImage(PNG);
   const staged = state.items.find(item => item.clipboard).path;
-  await service.clearItems(); await assert.rejects(fs.stat(staged), { code: 'ENOENT' });
+  await service.clearItems(); await fs.access(staged);
+  service.clock = () => Date.now() + 10001; await service.expireClearUndo(); await assert.rejects(fs.stat(staged), { code: 'ENOENT' });
   assert.deepEqual(await fs.readFile(original), PNG);
 });
 
@@ -124,4 +125,10 @@ test('empty, unsupported, whitespace, invalid UTF-8, and excessive file lists re
   for (const items of [[], [clipboardItem({ 'text/html': '<b>rich only</b>' })], [clipboardItem({ 'text/plain': ' \n ' })], [clipboardItem({ 'text/plain': Buffer.from([0xff]) })]]) await assert.rejects(captureClipboard({ clipboard: { read: async () => items }, service }));
   assert.throws(() => parseFileURIs(Array.from({ length: 501 }, (_, i) => 'file:///tmp/' + i).join('\n')), /500/);
   assert.equal((await service.getState()).items.length, 0);
+});
+
+test('copied web link URI representation falls back to plain text without becoming a file', async t=>{
+  const {service,calls}=await fixture(t); const url='https://example.com/project';
+  const clipboard={read:async()=>[clipboardItem({'text/uri-list':url,'text/plain':url})]};
+  const state=await captureClipboard({clipboard,service}); assert.equal(state.items.length,1); assert.equal(await fs.readFile(state.items[0].path,'utf8'),url); assert.deepEqual(calls,[]);
 });

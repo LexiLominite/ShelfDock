@@ -23,7 +23,7 @@
   ],
   "settings": {
     "shakeEnabled": true,
-    "sensitivity": "normal",
+    "sensitivity": "strong",
     "viewMode": "expanded"
   }
 }

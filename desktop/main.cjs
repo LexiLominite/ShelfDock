@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, dialog, shell, clipboard } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, globalShortcut, ipcMain, dialog, shell, clipboard, safeStorage, ClipboardItem } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { pathToFileURL } = require('node:url');
@@ -9,6 +9,8 @@ const { captureClipboard } = require('./clipboard.cjs');
 const { createConfig, importConfiguration } = require('./config.cjs');
 const { migrateLegacyData } = require('./migrate.cjs');
 const { acquireWorker } = require('./worker.cjs');
+const { ClipboardHistory } = require('./clipboard-history.cjs');
+const { TunnelManager } = require('./tunnels.cjs');
 
 const { productName = 'DropHarbor' } = require('../package.json');
 // Retain the existing data directory and singleton identity across editions.
@@ -18,9 +20,9 @@ const backgroundTest = process.env.LEX_DRIFT_BACKGROUND_TEST === '1';
 const startHidden = backgroundTest || process.argv.includes('--background');
 const singleton = app.requestSingleInstanceLock({ background: startHidden });
 if (!singleton) app.quit();
-let window, tray, service, poll, refreshTimer, worker, quitting = false, closingWorker = false;
+let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, tunnels, worker, quitting = false, closingWorker = false;
 let interaction = { dragging: false, editing: false };
-let runtimeSettings = { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' };
+let runtimeSettings = { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' };
 const detector = new ShakeDetector();
 const nativeStatus = { shortcut: 'CommandOrControl+Shift+Space', shortcutAvailable: false };
 const entry = path.join(__dirname, '..', 'dist', 'index.html');
@@ -83,7 +85,9 @@ function safeHandler(method, fn) {
     if (!window || event.sender !== window.webContents || event.senderFrame?.url !== entryURL) {
       throw new Error(`This request did not come from ${productName}.`);
     }
-    if (service?.configurationImport && !['getState', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
+    if (service?.authenticationSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for connection setup to finish.');
+    if (service?.configurationImport && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
+    if (service?.tunnelSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for forwarding setup to finish.');
     return fn(...args);
   });
 }
@@ -95,7 +99,9 @@ if (singleton) app.whenReady().then(async () => {
     try { await migrateLegacyData({ target: app.getPath('userData'), legacy: path.join(app.getPath('appData'), 'Drift') }); }
     catch (error) { nativeStatus.migrationWarning = error.message; console.warn(error.message); }
   }
-  service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish });
+  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); } });
+  await clipboardHistory.initialized;
+  service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish, safeStorage });
   await service.getState();
   if (app.isPackaged) {
     try {
@@ -114,6 +120,8 @@ if (singleton) app.whenReady().then(async () => {
     }
     } catch (error) { nativeStatus.presetWarning = 'Personal setup could not be loaded. Import your configuration again from Settings. ' + error.message; console.warn(nativeStatus.presetWarning); }
   }
+  tunnels = new TunnelManager({ dataDir: app.getPath('userData'), service, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:tunnels', state); } });
+  await tunnels.initialized;
   const initial = await service.getState();
   runtimeSettings = initial.settings;
   detector.setSensitivity(initial.settings.sensitivity);
@@ -135,9 +143,11 @@ if (singleton) app.whenReady().then(async () => {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => { if (url !== entryURL) event.preventDefault(); });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  for (const method of ['getState', 'refreshHosts', 'probeHosts', 'saveHost', 'removeHost', 'enqueueFiles', 'enqueueText', 'removeItem', 'clearItems', 'send', 'updateSettings']) {
+  for (const method of ['getState', 'refreshHosts', 'probeHosts', 'saveHost', 'removeHost', 'enqueueFiles', 'enqueueText', 'removeItem', 'clearItems', 'undoClear', 'send', 'sendMany', 'updateSettings', 'configureAccess', 'forgetPassword']) {
     safeHandler(method, async (...args) => decorate(await service[method](...args)));
   }
+  for (const [method, operation] of Object.entries({ getClipboardHistory: options => clipboardHistory.getState(options), updateClipboardPreferences: patch => clipboardHistory.updatePreferences(patch), captureClipboardHistory: () => clipboardHistory.capture(), getClipboardEntry: id => clipboardHistory.detail(id), copyClipboardEntry: request => clipboardHistory.copy(request), setClipboardPinned: request => clipboardHistory.setPinned(request), removeClipboardEntry: id => clipboardHistory.remove(id), clearClipboardHistory: () => clipboardHistory.clearUnpinned(), saveClipboardSnippet: request => clipboardHistory.saveSnippet(request), addClipboardEntryToShelf: async id => decorate(await clipboardHistory.addToShelf(id, service)) })) safeHandler(method, operation);
+  for (const [method, operation] of Object.entries({ getTunnels: () => tunnels.getState(), startTunnel: request => tunnels.start(request), stopTunnel: id => tunnels.stop(id), restartTunnel: id => tunnels.restart(id), removeTunnelHistory: id => tunnels.removeHistory(id), updateTunnelNote: request => tunnels.updateNote(request) })) safeHandler(method, operation);
   safeHandler('pickFiles', async () => {
     const selection = await dialog.showOpenDialog(window, {
       title: `Add files to ${productName}`, properties: ['openFile', 'openDirectory', 'multiSelections'],
@@ -145,7 +155,7 @@ if (singleton) app.whenReady().then(async () => {
     return decorate(selection.canceled ? await service.getState() : await service.enqueueFiles(selection.filePaths));
   });
   safeHandler('setInteraction', value => {
-    interaction = { dragging: value?.dragging === true, editing: value?.editing === true };
+    interaction = { dragging: value?.dragging === true, editing: value?.editing === true, sensitiveEditing: value?.sensitiveEditing === true };
   });
   safeHandler('captureClipboard', async () => decorate(await captureClipboard({ clipboard, service })));
   safeHandler('exportConfig', async () => {
@@ -174,7 +184,7 @@ if (singleton) app.whenReady().then(async () => {
   tray = new Tray(trayIcon);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Show ${productName}`, click: () => reveal('tray') },
-    { label: 'Refresh machines', click: () => { if (service.configurationImport) return; service.refreshHosts().then(() => service.configurationImport ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
+    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.transferring) return; service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
     { type: 'separator' },
     { label: `Quit ${productName}`, click: () => { quitting = true; app.quit(); } },
   ]));
@@ -191,7 +201,7 @@ if (singleton) app.whenReady().then(async () => {
   await window.loadFile(entry);
   if (!startHidden) reveal('launch');
   publish(await service.getState());
-  service.refreshHosts().then(() => service.configurationImport ? null : service.probeHosts()).catch(console.error);
+  service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   // Poll position only: never install keyboard/mouse hooks or record cursor history on disk.
   if (!backgroundTest && !(process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY))) {
     poll = setInterval(() => {
@@ -199,11 +209,12 @@ if (singleton) app.whenReady().then(async () => {
       if (detector.add(screen.getCursorScreenPoint())) toggleShelf('shake');
     }, 32);
   }
+  if (!backgroundTest) clipboardTimer = setInterval(() => clipboardHistory.tick().catch(() => {}), 1500);
   refreshTimer = setInterval(async () => {
     const state = await service.getState();
-    if (service.configurationImport) return;
+    if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.transferring) return;
     if (state.history.some(receipt => receipt.status === 'sending')) return;
-    service.refreshHosts().then(() => service.configurationImport ? null : service.probeHosts()).catch(console.error);
+    service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   }, 90000);
 }).catch(error => {
   console.error(error);
@@ -216,10 +227,10 @@ app.on('second-instance', (_event, _argv, _directory, data) => { if (!data?.back
 app.on('activate', () => reveal('dock'));
 app.on('window-all-closed', () => { if (quitting) app.quit(); });
 app.on('before-quit', event => {
-  quitting = true; clearInterval(poll); clearInterval(refreshTimer);
+  quitting = true; clearInterval(poll); clearInterval(refreshTimer); clearInterval(clipboardTimer);
   if (worker?.primary && !closingWorker) {
     event.preventDefault(); closingWorker = true;
-    worker.close().catch(console.error).finally(() => app.quit());
+    Promise.resolve(tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
   }
 });
 app.on('will-quit', () => { globalShortcut.unregisterAll(); worker?.close().catch(console.error); });
