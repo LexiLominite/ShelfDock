@@ -59,3 +59,10 @@ This review was advisory evidence, not proof of security or native compatibility
 ## Compilation handoff
 
 The user-requested Grok build operator runs in a separate driver directory. An exact-command gate permits only a one-time detached build launcher and a bounded status reader; source edits, application launches, account access, uploads, and unrelated commands are excluded. The local script runs the full test suite, builds the renderer, and packages the clean and personal editions for macOS ARM64, Windows x64, Linux ARM64, and Linux x64 with publication disabled. Personal presets stay local and are not printed to the model. Earlier candidates and their logs are preserved separately when new requested features require rebuilding. The final Undo-enabled run passed all 148 tests and the renderer build before packaging. Package contents, privacy separation, architecture, and release hashes receive independent verification before publication.
+
+
+## 2026-09-28: Delegated release compilation
+
+At the user's request, Grok performed the routine compilation through a reviewed, isolated launcher. The CLI explicitly selected `grok-4.6`; final metadata reported `grok-4.6-build` and normal completion. A tool hook allowed only one exact launch command and repeated sanitized status commands. The supervisor prevented duplicate builds and did not open the app, edit source, contact target machines, or publish artifacts.
+
+The final Undo-enabled v0.3.0 run passed all 148 automated tests, built the renderer, and built eight packages: DropHarbor and lex-drift each for macOS ARM64, Windows x64, Linux ARM64, and Linux x64. Earlier partial and superseded candidate logs were preserved separately. Package-content verification and release checks remain separate from compilation; these cross-build results do not imply native Windows/Linux validation or code signing.
