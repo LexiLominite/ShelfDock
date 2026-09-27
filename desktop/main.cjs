@@ -81,7 +81,7 @@ function safeHandler(method, fn) {
     if (!window || event.sender !== window.webContents || event.senderFrame?.url !== entryURL) {
       throw new Error('This request did not come from lex-drift.');
     }
-    if (service?.configurationImport && !['getState', 'hideWindow', 'quit'].includes(method)) throw new Error('Wait for configuration import to finish.');
+    if (service?.configurationImport && !['getState', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
     return fn(...args);
   });
 }

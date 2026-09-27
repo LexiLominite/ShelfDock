@@ -72,8 +72,9 @@ async function controller(options = {}) {
     clipboard: { read: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
   };
   const initialState = { hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
+  let fakeService;
   class FakeService {
-    constructor() { record('serviceCreated'); this.state = initialState; }
+    constructor() { record('serviceCreated'); this.state = initialState; fakeService = this; }
     async getState() { return this.state; }
     async refreshHosts() { return this.state; }
     async probeHosts() { return this.state; }
@@ -115,7 +116,7 @@ async function controller(options = {}) {
     assert.ok(poll, 'normal operation installs cursor sampling');
     for (const x of [0, 50, 130, 50, 0, 60, 140, 60, 0, 60, 150]) { clock += 32; cursor = { x: 300 + x, y: 200 }; poll.callback(); }
   };
-  return { app, calls, windows, trays, timers, shortcuts, errors, invoke, shake, workerOptions, advance: milliseconds => { clock += milliseconds; } };
+  return { app, calls, windows, trays, timers, shortcuts, errors, invoke, shake, workerOptions, service: fakeService, advance: milliseconds => { clock += milliseconds; } };
 }
 
 test('actual controller shows on a shake and hides on a later shake while respecting cooldown', async () => {
@@ -147,6 +148,17 @@ test('shortcut and tray clicks toggle the shelf, including a deliberate shortcut
   c.trays[0].emit('click'); assert.equal(window.isVisible(), true);
   c.trays[0].emit('click'); assert.equal(window.isVisible(), false);
   shortcut(); assert.equal(window.isVisible(), true);
+});
+
+test('configuration import accepts interaction release so the gesture can hide again while mutations stay blocked', async () => {
+  const c = await controller({ argv: ['--background'] }); const window = c.windows[0];
+  c.shake(); await c.invoke('setInteraction', { dragging: false, editing: true });
+  c.service.configurationImport = true;
+  await assert.rejects(c.invoke('refreshHosts'), /configuration import to finish/);
+  const state = await c.invoke('getState'); assert.equal(state.items.length, 0);
+  await assert.doesNotReject(c.invoke('setInteraction', { dragging: false, editing: false }));
+  c.advance(2500); c.shake(); assert.equal(window.isVisible(), false, 'closing an editor during import cannot leave gesture hiding permanently blocked');
+  await assert.rejects(c.invoke('refreshHosts'), /configuration import to finish/);
 });
 
 test('silent background-test mode never shows, focuses, pins, registers shortcuts, creates a tray, or polls the cursor', async () => {

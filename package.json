@@ -1,7 +1,7 @@
 {
   "name": "lex-drift",
   "productName": "lex-drift",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Shake to collect. Drop onto a machine to send.",
   "author": "LexiLominite",
   "private": true,
