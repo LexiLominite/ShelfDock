@@ -63,7 +63,7 @@ const drop=async(page,selector,data)=>{
   const page=await app.page('expanded');const card=page.locator('[data-host-id="host-0"]');
   await card.getByRole('button',{name:'Open site on Studio',exact:true}).click();
   const form=card.getByRole('form',{name:'Connect to a website through Studio'});
-  await form.waitFor();assert.equal(await form.getByRole('button',{name:'Advanced',exact:true}).getAttribute('aria-expanded'),'false');
+  await form.waitFor();assert.equal(await form.locator('.quick-connect-heading strong').innerText(),'Remote service');assert.equal(await form.getByRole('button',{name:'Advanced',exact:true}).getAttribute('aria-expanded'),'false');
   assert.equal(await form.getByLabel('Website address',{exact:true}).inputValue(),'');
   assert.equal(await count(page,'startTunnel'),0);
   await page.locator('.app').dispatchEvent('dragenter');

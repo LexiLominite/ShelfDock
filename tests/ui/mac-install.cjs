@@ -6,17 +6,24 @@ const harness = require('./harness.cjs');
 (async () => {
   const app = await harness();
   const open = async page => {
-    await page.getByRole('button', {name: 'Settings', exact: true}).click();
-    await page.getByRole('button', {name: 'Install on another Mac', exact: true}).click();
+    await page.locator('[data-host-id="host-0"]').hover();
+    await page.getByRole('button', {name: 'Connections for Studio', exact: true}).click();
+    await page.getByRole('menuitem', {name: 'Install on this device…', exact: true}).click();
+    assert.equal(await page.getByLabel('Device to install on').inputValue(), 'host-0');
+    assert.equal(await page.getByLabel('Device to install on').isDisabled(), true);
+    await page.getByText(/Installation currently supports Macs only/).waitFor();
   };
   const preview = async page => {
-    await page.getByLabel('Mac to install on').selectOption('host-0');
     await page.getByRole('button', {name: 'Check Mac', exact: true}).click();
     await page.getByRole('heading', {name: 'Review destination'}).waitFor();
   };
   try {
     for (const mode of ['compact', 'expanded', 'large']) {
-      const page = await app.page(mode, {personalPreset: true});
+      const page = await app.page(mode, {personalPreset: true, clipboardToolsEnabled: false});
+      assert.equal(await page.getByRole('button', {name: 'Clipboard', exact: true}).count(), 0);
+      await page.getByRole('button', {name: 'Settings', exact: true}).click();
+      assert.equal(await page.getByRole('button', {name: /Install on/}).count(), 0);
+      await page.getByRole('button', {name: 'Close dialog', exact: true}).click();
       await open(page); await preview(page);
       const review = page.getByRole('region', {name: 'Installation destination'});
       assert.ok((await review.innerText()).includes('demo@machine-0.example.test'));
@@ -42,8 +49,10 @@ const harness = require('./harness.cjs');
     }
     for (const platform of ['win32', 'linux']) {
       const page = await app.page('expanded', {platform});
+      await page.getByRole('button', {name: 'Connections for Studio', exact: true}).click();
+      assert.equal(await page.getByRole('menuitem', {name: 'Install on this device…'}).count(), 0);
+      await page.keyboard.press('Escape');
       await page.getByRole('button', {name: 'Settings', exact: true}).click();
-      assert.equal(await page.getByRole('button', {name: 'Install on another Mac'}).count(), 0);
       assert.equal(await page.getByRole('switch', {name: 'Enable Clipboard tools'}).count(), 1);
       await page.close();
     }

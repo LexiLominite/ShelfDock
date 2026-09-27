@@ -66,3 +66,8 @@ The user-requested Grok build operator runs in a separate driver directory. An e
 At the user's request, Grok performed the routine compilation through a reviewed, isolated launcher. The CLI explicitly selected `grok-4.6`; final metadata reported `grok-4.6-build` and normal completion. A tool hook allowed only one exact launch command and repeated sanitized status commands. The supervisor prevented duplicate builds and did not open the app, edit source, contact target machines, or publish artifacts.
 
 The final Undo-enabled v0.3.0 run passed all 148 automated tests, built the renderer, and built eight packages: DropHarbor and lex-drift each for macOS ARM64, Windows x64, Linux ARM64, and Linux x64. Earlier partial and superseded candidate logs were preserved separately. Package-content verification and release checks remain separate from compilation; these cross-build results do not imply native Windows/Linux validation or code signing.
+
+
+## 2026-09-28: Grok 4.7 optional tools and remote-service terminology
+
+A bounded description-only review requested `grok-4.7`; the actual response metadata identified `grok-4.7-build`. No user screenshot, real host inventory, shelf filenames, application profile, credentials or personal preset were supplied. The review recommended service-location labels for the primary connection, exact SSH terminology in Advanced, the machine-menu installer with explicit OS/destination checks, a fresh Settings choice for Clipboard after legacy migration, and keyboard focus management. These recommendations were implemented and tested independently. This was not a real remote installation or native Windows/Linux test.

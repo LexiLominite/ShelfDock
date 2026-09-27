@@ -1,3 +1,17 @@
+# DropHarbor / lex-drift v0.4.2 verification
+
+Version 0.4.2 makes Clipboard opt-in after upgrades as well as new installs, moves installation into the selected machine’s menu, and replaces the confusing default Local headline with Remote service. See [workflow notes and screenshots in all three densities](docs/optional-tools.md).
+
+- 213 automated Node tests passed. The new migration check verifies that v0.4.1 consent cannot enable tools or record, encrypted items are retained unchanged even beyond expiry while disabled, fresh Settings consent persists, and recording remains a separate choice.
+- The headless UI suite covers three densities, correct SSH directions, URL drops, saved repeats, Stop, transfer shelf Undo and multi-machine sends; 11 Clipboard groups cover optional tools and tab visibility. Installer coverage includes the contextual destination, no Settings install button, OS/existing-app refusal, review, personal-preset consent, busy guards and failures.
+- Additional keyboard and screenshot coverage checks the hidden Clipboard default, Remote service heading, collapsed details, viewport-bounded menu, a selected installer destination, no probe just from opening the dialog, and focus on entry and dismissal.
+- 67 representative rendered contrast checks passed using the unchanged light palette. No new colour tokens were introduced.
+- Grok 4.7 reviewed the bounded UX proposal and ran renderer/package commands; returned metadata identifies `grok-4.7-build`. Artifact integrity and exact packaged source/dependencies are verified independently before publication.
+
+No remote Mac was installed during these tests. Windows/Linux remain cross-builds without native desktop execution. Existing real-host forwarding evidence below belongs to v0.4.0; the SSH contracts and underlying forwarding behavior are unchanged in this revision. Releases remain unsigned private prereleases.
+
+# Earlier evidence: v0.4.1
+
 # DropHarbor / lex-drift v0.4.1 verification
 
 Version 0.4.1 restores the original lavender, off-white and purple palette, makes Clipboard tools optional, adds reviewed Mac-to-Mac installation, and keeps machine details collapsed in Expanded view. See [palette and workflow notes, including all six before/after comparisons](docs/palette.md).
