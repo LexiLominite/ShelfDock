@@ -7,7 +7,7 @@ Version 0.4.0 redesigns machine cards, adds the small website URL bar and one-cl
 - The new URL bar was exercised against a trusted live POSIX host over Tailscale with production SSH forwarding. Go and saved repeat each returned the expected HTTP nonce, Stop closed the listener, and the owned remote fixture and SSH processes were cleaned up. The browser adapter fetched the validated address to keep the desktop quiet; native validation/dispatch were separately tested.
 - Grok 4.7 reviewed the design. The final renderer build was run directly after explicit user authorization following a blocked Grok wrapper execution.
 
-Package and installed-app checks for this release are recorded after packaging. Cross-built Windows/Linux packages do not establish native desktop validation. Packages remain unsigned private prereleases; neither repository visibility nor clipboard opt-in defaults change.
+Package and installed-app results are recorded in the [v0.4.0 release notes](https://github.com/LexiLominite/DropHarbor/releases/tag/v0.4.0). Cross-built Windows/Linux packages do not establish native desktop validation. Packages remain unsigned private prereleases; neither repository visibility nor clipboard opt-in defaults change.
 
 ## Earlier validated evidence: v0.3.0
 

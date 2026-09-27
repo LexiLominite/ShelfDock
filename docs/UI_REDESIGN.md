@@ -40,7 +40,7 @@ On 28 September 2026:
 - The actual new URL bar was exercised against a trusted POSIX host over Tailscale with the production SSH TunnelManager. Go returned the expected nonce from an owned in-memory HTTP fixture; Stop closed the listener; one-click saved repeat returned a second verified response; final Stop and cleanup closed the remote fixture, local listener and owned SSH processes. The browser-opening adapter fetched the validated address instead of creating an OS browser window.
 - Grok 4.7 reviewed the design and performed earlier renderer compilations. Response metadata identified `grok-4.7-build`. After its final wrapper execution was blocked, the user authorized a direct local build; that fresh build, the added Balanced history-height check, and refreshed screenshots all passed.
 
-Native Windows/Linux desktop execution and an actual OS browser launch were not performed in this pass. Browser-launch validation and dispatch were covered with inert native tests. Package and installation verification for v0.4.0 is recorded separately in VERIFICATION.md.
+Native Windows/Linux desktop execution and an actual OS browser launch were not performed in this pass. Browser-launch validation and dispatch were covered with inert native tests. Package and installation results are recorded separately in the v0.4.0 GitHub release notes.
 
 Reproduce automated checks with Node 22.12+:
 
