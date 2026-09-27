@@ -164,7 +164,7 @@ class DriftService {
     }); await this.writeChain;
   }
   async getState() { await this.initialized; await this.passwordAuth.initialized; return this.decoratedState(); }
-  assertConfigurationIdle() { if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); }
+  assertConfigurationIdle() { if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); }
   mutateShelf(operation) {
     const next = this.shelfMutation.catch(() => {}).then(async () => {
       await this.initialized;
@@ -192,7 +192,7 @@ class DriftService {
     if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
     if (this.scanPromise) return this.scanPromise;
     if (this.probePromise) await this.probePromise;
-    if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
+    this.assertConfigurationIdle();
     if (this.scanPromise) return this.scanPromise;
     this.scanPromise = this.scanHosts().finally(() => { this.scanPromise = null; }); return this.scanPromise;
   }
@@ -278,8 +278,9 @@ class DriftService {
     if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
     if (this.probePromise) return this.probePromise;
     if (this.scanPromise) await this.scanPromise;
+    this.assertConfigurationIdle();
     if (!this.state.environment.sshAvailable) await this.refreshHosts();
-    if (this.configurationImport) throw new Error('Wait for configuration import to finish.');
+    this.assertConfigurationIdle();
     if (this.probePromise) return this.probePromise;
     this.probePromise = this.checkHosts({ automatic }).finally(() => { this.probePromise = null; }); return this.probePromise;
   }

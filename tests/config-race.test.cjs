@@ -62,3 +62,9 @@ test('configuration import does not change endpoints during password or key setu
   assert.deepEqual(calls, []);
   assert.equal(service.configurationImport, undefined);
 });
+
+test('configuration import queued before a Mac installation lock cannot resume into a mutation', async t => {
+  const { service, calls, emissions } = await fixture(t); const before = await service.getState();
+  const pending = importConfiguration(service, importedConfig); service.macInstallation = true;
+  await assert.rejects(pending, /Mac installation/); assert.deepEqual(await service.getState(), before); assert.deepEqual(calls, []); assert.deepEqual(emissions, []); assert.equal(service.configurationImport, undefined);
+});

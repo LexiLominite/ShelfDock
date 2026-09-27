@@ -177,3 +177,14 @@ test('authentication alone cannot mark native startup ready and timeout terminat
   const state = await manager.start({ hostId: 'fixture-host', mode: 'local', targetHost: '127.0.0.1', targetPort, listenPort: await freePort() });
   assert.equal(state.active[0].status, 'failed'); assert.match(state.active[0].error, /did not become ready/); assert.deepEqual(killed, ['SIGTERM']); assert.equal(service.tunnelSetup, 0);
 });
+
+test('forwarding rechecks Mac installation lock after queued initialization and host-state reads', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dropharbor-tunnel-install-guard-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const host = { id: 'fixture', name: 'Fixture', address: 'example.invalid', user: 'fixture', port: 22 };
+  let release; let blockedRead = false; let entered; const enteredRead = new Promise(resolve => { entered = resolve; }); const gate = new Promise(resolve => { release = resolve; });
+  const service = { getState: async () => { if (blockedRead) { entered(); await gate; } return { hosts: [host] }; }, run: () => assert.fail('No SSH command may start'), sshArgs: () => assert.fail('No SSH command may start') };
+  const manager = new TunnelManager({ dataDir: directory, service }); await manager.initialized;
+  const input = { hostId: host.id, mode: 'local', targetHost: 'localhost', targetPort: 8000, listenPort: 8001 };
+  const first = manager.start(input); service.macInstallation = true; await assert.rejects(first, /Mac installation/); assert.equal((await manager.getState()).active.length, 0);
+  service.macInstallation = false; blockedRead = true; const second = manager.start(input); await enteredRead; service.macInstallation = true; release(); await assert.rejects(second, /Mac installation/); assert.equal((await manager.getState()).active.length, 0); await manager.shutdown();
+});

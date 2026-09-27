@@ -83,6 +83,7 @@ function createConfig(state) {
 async function importConfiguration(service, input) {
   const config = validateConfig(input);
   await service.initialized;
+  if (service.macInstallation) throw new Error('Wait for Mac installation to finish before importing settings.');
   if (service.configurationImport) throw new Error('Wait for the current configuration import to finish.');
   if (service.tunnelSetup) throw new Error('Wait for forwarding setup to finish before importing settings.');
   if (service.authenticationSetup) throw new Error('Wait for connection setup to finish before importing settings.');

@@ -25,12 +25,30 @@ const drop=async(page,selector,data)=>{
   }
   const expanded=await app.page('large');
   const first=expanded.locator('[data-host-id="host-0"]');const second=expanded.locator('[data-host-id="host-1"]');
-  await second.getByLabel('Website address',{exact:true}).fill('http://localhost:9999');
+  assert.equal(await expanded.locator('.machine-quick-connect').count(),0,'Expanded must not open forwarding controls automatically');
+  assert.equal(await expanded.locator('.machine-activity').count(),0,'Expanded must not open device details automatically');
+  const detailsToggle=first.getByRole('button',{name:'Show details for Studio',exact:true});
+  assert.equal(await detailsToggle.getAttribute('aria-controls'),null);
+  const shelfDrag=await expanded.evaluateHandle(()=>new DataTransfer());
+  await expanded.locator('.shelf-item').first().dispatchEvent('dragstart',{dataTransfer:shelfDrag});
+  await expanded.waitForFunction(()=>document.querySelector('[data-host-id="host-0"] .machine-details-toggle').disabled);
+  assert.equal(await detailsToggle.isDisabled(),true,'Details cannot reflow drop targets during a drag');
+  await expanded.locator('.shelf-item').first().dispatchEvent('dragend',{dataTransfer:shelfDrag});await shelfDrag.dispose();
+  await detailsToggle.click();
+  assert.equal(await first.getByRole('button',{name:'Hide details for Studio',exact:true}).getAttribute('aria-controls'),await first.locator('.machine-activity').getAttribute('id'));
+
+  assert.equal(await first.locator('.machine-activity').count(),1);
+  assert.equal(await second.locator('.machine-activity').count(),0);
+  await expanded.getByLabel('Display density',{exact:true}).selectOption('expanded');
+  await expanded.getByLabel('Display density',{exact:true}).selectOption('large');
+  assert.equal(await first.locator('.machine-activity').count(),0,'Returning to Expanded keeps details collapsed');
   await first.getByRole('button',{name:'Connections for Studio',exact:true}).click();
   await expanded.getByRole('menuitem',{name:/Remote port forward/}).click();
   assert.equal(await first.getByRole('button',{name:'← Remote',exact:true}).getAttribute('aria-pressed'),'true');
-  assert.equal(await second.getByRole('button',{name:'Local →',exact:true}).getAttribute('aria-pressed'),'true');
-  assert.equal(await second.getByLabel('Website address',{exact:true}).inputValue(),'http://localhost:9999');
+  assert.equal(await second.locator('.machine-quick-connect').count(),0,'Opening one host never expands other hosts');
+  await first.getByLabel('Website address',{exact:true}).fill('http://localhost:9999');
+  await expanded.keyboard.press('Escape');
+  assert.equal(await first.locator('.machine-quick-connect').count(),0);
   await expanded.getByRole('button',{name:'Close machines',exact:true}).click();
   await expanded.getByRole('button',{name:'Clipboard',exact:true}).click();
   await expanded.getByText('Recording locally',{exact:true}).waitFor();

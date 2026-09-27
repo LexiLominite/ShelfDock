@@ -8,6 +8,7 @@ const subscribe = (channel, callback) => {
 };
 contextBridge.exposeInMainWorld('drift', {
   productName: process.argv.includes('--lex-drift-product-name=lex-drift') ? 'lex-drift' : 'DropHarbor',
+  updateClipboardTools: request => invoke('updateClipboardTools', request),
   getClipboardHistory: request => invoke('getClipboardHistory', request),
   updateClipboardPreferences: request => invoke('updateClipboardPreferences', request),
   captureClipboardHistory: request => invoke('captureClipboardHistory', request),
@@ -19,6 +20,10 @@ contextBridge.exposeInMainWorld('drift', {
   saveClipboardSnippet: request => invoke('saveClipboardSnippet', request),
   addClipboardEntryToShelf: request => invoke('addClipboardEntryToShelf', request),
   onClipboardHistory: callback => subscribe('drift:clipboard-history', callback),
+  getMacInstallState: () => invoke('getMacInstallState'),
+  previewMacInstall: request => invoke('previewMacInstall', request),
+  installOnMac: request => invoke('installOnMac', request),
+  onMacInstallState: callback => subscribe('drift:mac-install', callback),
   getTunnels: () => invoke('getTunnels'),
   startTunnel: request => invoke('startTunnel', request),
   openTunnelSite: request => invoke('openTunnelSite', request),

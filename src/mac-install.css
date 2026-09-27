@@ -1,0 +1,19 @@
+.mac-install-panel { font-size: 12px; line-height: 1.6; }
+.mac-install-help { color: var(--muted); font-size: 11px; line-height: 1.65; margin: 9px 0 14px; }
+.mac-install-panel select { min-height: 38px; color: var(--ink); }
+.mac-install-review { padding: 13px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 9px; }
+.mac-install-review h3 { font-size: 14px; margin: 0 0 12px; }
+.mac-install-review dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 9px 12px; margin: 0; }
+.mac-install-review dt { color: var(--muted); }
+.mac-install-review dd { margin: 0; overflow-wrap: anywhere; }
+.mac-install-exact { font-family: var(--font-mono); overflow-wrap: anywhere; }
+.mac-install-consent { display: flex; align-items: start; gap: 8px; margin-top: 16px; padding: 10px; background: var(--warning-soft); border: 1px solid var(--warning); border-radius: 6px; color: var(--warning); font-size: 11px; }
+.mac-install-consent input { margin-top: 4px; accent-color: var(--accent); }
+.mac-install-progress, .mac-install-complete { display: flex; align-items: start; gap: 11px; padding: 14px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 9px; }
+.mac-install-progress > svg, .mac-install-complete > svg { margin-top: 3px; color: var(--accent); }
+.mac-install-complete > svg { color: var(--success); }
+.mac-install-progress p, .mac-install-complete p { color: var(--muted); margin: 5px 0 0; font-size: 11px; }
+.mac-install-complete > div { flex: 1; min-width: 0; }
+.mac-install-error { display: flex; align-items: start; gap: 8px; padding: 11px; color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger); border-radius: 7px; }
+.mac-install-error > svg { margin-top: 2px; }
+.mac-install-panel .settings-warning { line-height: 1.6; }

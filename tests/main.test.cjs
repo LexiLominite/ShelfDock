@@ -83,7 +83,7 @@ async function controller(options = {}) {
   }
   let workerOptions, historyOptions, fakeTunnels;
   const modules = {
-    '../package.json': { productName: options.productName || 'DropHarbor' },
+    '../package.json': { productName: options.productName || 'DropHarbor', version: '0.4.1' },
     electron,
     'node:path': path,
     'node:url': { pathToFileURL },
@@ -94,8 +94,25 @@ async function controller(options = {}) {
     './config.cjs': { createConfig: () => ({}), importConfiguration: async () => initialState },
     './migrate.cjs': { migrateLegacyData: async () => undefined },
     './tunnels.cjs': { TunnelManager: class { constructor() { fakeTunnels = this; this.state = { active: options.activeTunnels || [], history: [] }; this.initialized = Promise.resolve(); } get active() { return new Map(this.state.active.map(view => [view.id, { view: { ...view, hostId: siteHost.id }, endpoint: endpointKey(siteHost) }])); } snapshot() { return this.state; } async getState() { return this.state; } async stop(id) { record('tunnelStop', id); this.state.active = this.state.active.filter(tunnel => tunnel.id !== id); } async shutdown() { record('tunnelsShutdown'); } } },
+    './mac-installer.cjs': { MacInstaller: class { constructor(args) { this.args = args; record('macInstallerCreated', args.platform, args.sourceApp); } getState() { return { available: this.args.platform === 'darwin' && this.args.isPackaged, operation: null }; } async preview(request) { record('macPreview', request); return { id: 'fictional-plan' }; } async install(request) { record('macInstall', request); return this.getState(); } async shutdown() { record('macInstallerShutdown'); await options.installerShutdown; } } },
     './tunnel-site.cjs': require('../desktop/tunnel-site.cjs'),
-    './clipboard-history.cjs': { ClipboardHistory: class { constructor(options) { historyOptions = options; this.initialized = Promise.resolve(); } async tick() {} } },
+    './clipboard-history.cjs': { ClipboardHistory: class {
+      constructor(args) { historyOptions = args; this.initialized = Promise.resolve(); this.tools = { enabled: options.clipboardToolsEnabled === true, showTab: true, historyEnabled: false }; }
+      toolsState() { return { ...this.tools }; }
+      requireTools() { if (!this.tools.enabled) throw new Error('Enable Clipboard tools in Settings first.'); }
+      async updateTools(patch) { Object.assign(this.tools, patch); if (!this.tools.enabled) this.tools.historyEnabled = false; record('clipboardToolsUpdated', patch); }
+      async getState() { return { entries: [], settings: { enabled: false }, tools: this.toolsState() }; }
+      async tick() {}
+      async capture() { record('historyCapture'); }
+      async copy() { record('historyCopy'); }
+      async detail() { record('historyDetail'); }
+      async updatePreferences() { record('historyPreferences'); }
+      async setPinned() { record('historyPin'); }
+      async remove() { record('historyRemove'); }
+      async clearUnpinned() { record('historyClear'); }
+      async saveSnippet() { record('historySnippet'); }
+      async addToShelf() { record('historyShelf'); return initialState; }
+    } },
     './worker.cjs': { acquireWorker: async args => {
       workerOptions = args; record('workerAcquire', args.background);
       if (options.workerError) throw new Error(options.workerError);
@@ -314,4 +331,45 @@ test('site IPC refuses the old session after its machine endpoint changes or dis
   c.service.state.hosts = [{ ...siteHost, name: 'A new display name', destination: '~/Downloads' }];
   await assert.doesNotReject(c.invoke('openTunnelSite', request));
   assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 1);
+});
+
+test('native Clipboard feature gate rejects history operations while explicit shelf paste stays independent', async () => {
+  const c = await controller();
+  assert.equal((await c.invoke('getState')).clipboardTools.enabled, false);
+  for (const [method, value] of [['captureClipboardHistory'], ['getClipboardEntry', 'fixture'], ['copyClipboardEntry', { id: 'fixture' }], ['setClipboardPinned', { id: 'fixture', pinned: true }], ['removeClipboardEntry', 'fixture'], ['clearClipboardHistory'], ['saveClipboardSnippet', { text: 'fixture' }], ['addClipboardEntryToShelf', 'fixture'], ['updateClipboardPreferences', { enabled: true }]]) await assert.rejects(c.invoke(method, value), /Enable Clipboard tools/);
+  await assert.rejects(c.invoke('captureClipboard'), /No clipboard access is permitted/, 'Shelf paste reaches its own explicit capture path, not the optional history gate');
+  const enabled = await c.invoke('updateClipboardTools', { enabled: true }); assert.equal(enabled.clipboardTools.enabled, true);
+  await c.invoke('captureClipboardHistory'); assert.equal(c.calls.filter(call => call.type === 'historyCapture').length, 1);
+  await c.invoke('updateClipboardTools', { showTab: false }); await c.invoke('copyClipboardEntry', { id: 'fixture' });
+  assert.equal(c.calls.filter(call => call.type === 'historyCopy').length, 1, 'Hide is presentation-only');
+  await c.invoke('updateClipboardTools', { enabled: false }); await assert.rejects(c.invoke('captureClipboardHistory'), /Enable Clipboard tools/);
+});
+
+
+test('Mac installer IPC rejects foreign callers and keeps mutations blocked while allowing hide and status', async () => {
+  const c = await controller({ argv: ['--background'] });
+  assert.deepEqual(c.errors, []);
+  const handler = c.handlers.get('drift:installOnMac');
+  await assert.rejects(handler({ sender: {}, senderFrame: { url: 'https://example.test' } }, { planId: 'forged' }), /did not come from/);
+  assert.equal(c.calls.some(call => call.type === 'macInstall'), false);
+  c.service.macInstallation = true;
+  for (const method of ['saveHost', 'refreshHosts', 'configureAccess', 'updateClipboardTools', 'previewMacInstall', 'installOnMac']) await assert.rejects(c.invoke(method, {}), /Mac installation to finish/);
+  await c.invoke('getMacInstallState'); await c.invoke('setInteraction', { editing: false }); await c.invoke('hideWindow');
+  assert.equal(c.windows[0].isVisible(), false);
+  c.service.macInstallation = false;
+  await c.invoke('previewMacInstall', { hostId: 'fictional' });
+  assert.equal(c.calls.filter(call => call.type === 'macPreview').length, 1);
+});
+
+test('Mac installation drains before releasing the singleton worker on quit', async () => {
+  let finish; const installerShutdown = new Promise(resolve => { finish = resolve; });
+  const c = await controller({ installerShutdown }); let prevented = false;
+  c.app.emit('before-quit', { preventDefault() { prevented = true; } });
+  await flush(); assert.equal(prevented, true);
+  assert.equal(c.calls.some(call => call.type === 'macInstallerShutdown'), true);
+  assert.equal(c.calls.some(call => call.type === 'workerClose'), false);
+  finish(); await flush(); await flush();
+  const order = c.calls.map(call => call.type);
+  assert.ok(order.indexOf('macInstallerShutdown') < order.indexOf('tunnelsShutdown'));
+  assert.ok(order.indexOf('tunnelsShutdown') < order.indexOf('workerClose'));
 });

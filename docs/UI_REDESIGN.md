@@ -1,5 +1,7 @@
 # Clipboard, machines and quick forwarding
 
+This document records the v0.4.0 layout redesign and its dark-theme screenshots. Version 0.4.1 keeps those layouts and restores the [original lavender palette](../BRAND.md); the newer screenshots are in [palette](palette.md).
+
 The workspace now uses three content densities. Compact makes scanning the priority, Balanced keeps everyday actions visible, and Expanded exposes forwarding controls and more detail. Transfers and Clipboard remain equally accessible.
 
 | Display label | Existing saved value | Behavior |
