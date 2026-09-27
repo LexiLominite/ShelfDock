@@ -31,22 +31,19 @@ class ClipboardHistory {
   toolsState() { return { enabled: this.tools.enabled && !this.disablingTools, showTab: this.tools.showTab, historyEnabled: this.historyEnabled() }; }
   historyEnabled() { return this.tools.enabled && !this.disablingTools && this.tools.historyConsent && this.settings.enabled; }
   requireTools() { if (!this.tools.enabled || this.disablingTools) throw new Error('Enable Clipboard tools in Settings first.'); }
-  async saveTools(settings) { await fs.mkdir(this.dir, { recursive: true, mode: 0o700 }); await this.atomic('tools-configured-v1', '1'); await this.atomic('tools.json', JSON.stringify(settings)); this.tools = settings; }
+  async saveTools(settings) { await fs.mkdir(this.dir, { recursive: true, mode: 0o700 }); await this.atomic('tools-configured-v1', '1'); await this.atomic('tools.json', JSON.stringify({ ...settings, version: 2 })); this.tools = settings; }
   async load() {
-    let missingTools = false, toolsConfigured = true;
-    try { await fs.access(path.join(this.dir, 'tools-configured-v1')); } catch (error) { toolsConfigured = error.code !== 'ENOENT'; }
     try {
       const saved = JSON.parse(await fs.readFile(path.join(this.dir, 'tools.json'), 'utf8'));
-      if (!saved || typeof saved !== 'object' || Array.isArray(saved) || Object.keys(saved).some(key => !Object.hasOwn(TOOLS_DEFAULTS, key)) || Object.keys(TOOLS_DEFAULTS).some(key => typeof saved[key] !== 'boolean')) throw new Error('Invalid tools preferences');
-      this.tools = saved;
-    } catch (error) { missingTools = error.code === 'ENOENT'; if (!missingTools) this.toolsError = 'Clipboard tools preferences need review. Enable tools in Settings when ready.'; }
+      // Version 1 could enable tools automatically from legacy history consent.
+      // Only a Settings choice saved by version 2 can enable this optional feature.
+      if (saved?.version === 2) {
+        const { version, ...preferences } = saved;
+        if (Object.keys(preferences).some(key => !Object.hasOwn(TOOLS_DEFAULTS, key)) || Object.keys(TOOLS_DEFAULTS).some(key => typeof preferences[key] !== 'boolean')) throw new Error('Invalid tools preferences');
+        this.tools = preferences;
+      }
+    } catch (error) { if (error.code !== 'ENOENT') this.toolsError = 'Clipboard tools preferences need review. Enable tools in Settings when ready.'; }
     await this.loadHistory();
-    // Preserve a previous explicit capture opt-in only when its preferences and
-    // encrypted history loaded correctly. Missing/corrupt settings never opt in.
-    if (missingTools && !toolsConfigured && this.validPreferences && this.settings.enabled && !this.loadFailed && !this.preferencesRecovery) {
-      try { await this.saveTools({ ...TOOLS_DEFAULTS, enabled: true, historyConsent: true }); }
-      catch { this.toolsError = 'Clipboard tools preferences could not be saved. Enable tools in Settings when ready.'; }
-    }
     if (!this.tools.enabled || !this.tools.historyConsent) this.settings.enabled = false;
   }
   async loadHistory() {

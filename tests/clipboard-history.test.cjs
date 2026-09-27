@@ -160,14 +160,14 @@ test('disabling keeps encrypted items and resets consent across restart and re-e
   await restarted.updatePreferences({ enabled: true }); await restarted.tick(); assert.equal(state.reads, 2);
 });
 
-for (const optedIn of [false, true]) test(`legacy migration preserves only explicit capture opt-in: ${optedIn}`, async t => {
+for (const optedIn of [false, true]) test(`legacy history consent never enables Clipboard tools: ${optedIn}`, async t => {
   const { history, args, dataDir } = await fixture(t); await history.capture();
   if (optedIn) await history.updatePreferences({ enabled: true });
   await fs.rm(path.join(dataDir, 'clipboard-history/tools.json'));
   await fs.rm(path.join(dataDir, 'clipboard-history/tools-configured-v1'));
   const before = await fs.readFile(path.join(dataDir, 'clipboard-history/history.bin'));
   const restored = new ClipboardHistory(args); await restored.initialized;
-  assert.equal(restored.toolsState().enabled, optedIn); assert.equal(restored.historyEnabled(), optedIn);
+  assert.equal(restored.toolsState().enabled, false); assert.equal(restored.historyEnabled(), false);
   assert.equal(restored.entries.length, 1); assert.deepEqual(await fs.readFile(path.join(dataDir, 'clipboard-history/history.bin')), before);
 });
 
@@ -216,4 +216,23 @@ test('failed disable persistence still closes the runtime gate and reports failu
   history.atomic = async () => { throw new Error('simulated disk failure'); };
   await assert.rejects(history.updateTools({ enabled: false }), /simulated disk failure/);
   await history.tick(); assert.equal(state.reads, 0); assert.equal(history.toolsState().enabled, false);
+});
+
+test('v0.4.1 automatic tools opt-in resets once without touching history; fresh Settings choice persists', async t => {
+  const { history, args, dataDir, state } = await fixture(t); await history.updatePreferences({ enabled: true }); await history.tick();
+  const historyFile = path.join(dataDir, 'clipboard-history/history.bin');
+  const before = await fs.readFile(historyFile);
+  await fs.writeFile(path.join(dataDir, 'clipboard-history/tools.json'), JSON.stringify({ enabled: true, showTab: true, historyConsent: true }));
+  state.time += 100 * 86400000;
+  const upgraded = new ClipboardHistory(args); await upgraded.initialized; await upgraded.tick();
+  assert.equal(upgraded.toolsState().enabled, false); assert.equal(upgraded.historyEnabled(), false);
+  assert.equal(upgraded.entries.length, 1); assert.equal(state.reads, 1);
+  assert.deepEqual(await fs.readFile(historyFile), before);
+  state.time -= 100 * 86400000;
+  await upgraded.updateTools({ enabled: true });
+  const restarted = new ClipboardHistory(args); await restarted.initialized; await restarted.tick();
+  assert.equal(restarted.toolsState().enabled, true); assert.equal(restarted.historyEnabled(), false); assert.equal(state.reads, 1);
+  await restarted.updatePreferences({ enabled: true });
+  const optedIn = new ClipboardHistory(args); await optedIn.initialized;
+  assert.equal(optedIn.historyEnabled(), true);
 });

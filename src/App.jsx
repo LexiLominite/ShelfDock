@@ -68,6 +68,7 @@ function App() {
   const [tunnelEntry, setTunnelEntry] = useState({ hostId: '', mode: 'local', tab: 'active' });
   const [tunnelBusy, setTunnelBusy] = useState(false);
   const [macInstallBusy, setMacInstallBusy] = useState(false);
+  const [installHostId, setInstallHostId] = useState('');
   const [undoClock, setUndoClock] = useState(Date.now);
   const [reveal, setReveal] = useState(false);
   const fileInput = useRef(null);
@@ -164,7 +165,8 @@ function App() {
   useEffect(() => {
     if (!modal) return;
     const before = document.activeElement;
-    setTimeout(() => (modalRef.current?.querySelector('input, textarea, select') || modalRef.current?.querySelector('button'))?.focus(), 0);
+    const returnTo = modal === 'install' ? document.querySelector(`[data-host-id="${CSS.escape(installHostId)}"] button[aria-haspopup="menu"]`) : before;
+    const focusTimer = setTimeout(() => (modalRef.current?.querySelector('input:not(:disabled), textarea:not(:disabled), select:not(:disabled)') || modalRef.current?.querySelector('button:not(:disabled)'))?.focus(), 0);
     const trap = (event) => {
       if (event.key === 'Escape') { event.preventDefault(); closeModal(); return; }
       if (event.key !== 'Tab') return;
@@ -174,8 +176,16 @@ function App() {
       else if (!event.shiftKey && document.activeElement === nodes.at(-1)) { event.preventDefault(); nodes[0].focus(); }
     };
     document.addEventListener('keydown', trap);
-    return () => { document.removeEventListener('keydown', trap); before?.focus?.(); };
-  }, [modal, closeModal]);
+    return () => {
+      clearTimeout(focusTimer); document.removeEventListener('keydown', trap);
+      if (modal === 'install') {
+        const machine = returnTo?.closest('.machine-card')?.querySelector('.machine-main');
+        machine?.focus();
+        // Compact actions become visible once the machine has focus.
+        requestAnimationFrame(() => { if (document.activeElement === machine && !modalRef.current) returnTo?.focus(); });
+      } else returnTo?.focus?.();
+    };
+  }, [modal, closeModal, installHostId]);
   useEffect(() => {
     const escape = (event) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
@@ -402,12 +412,12 @@ function App() {
   const settingUpAccess = busy === 'configureAccess' || busy === 'forgetPassword';
   const showMachineMenu = (event, host) => {
     event.preventDefault(); event.stopPropagation();
-    if (accessLock.current || tunnelLock.current || transferLock.current) return;
+    if (accessLock.current || tunnelLock.current || transferLock.current || macInstallLock.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.type === 'contextmenu' && event.clientX > 0 ? event.clientX : rect.right - 225;
     const y = event.type === 'contextmenu' && event.clientY > 0 ? event.clientY : rect.bottom + 5;
     setQuickHost(null); setRemoveArmed(false);
-    setMachineMenu({ hostId: host.id, x: Math.max(10, Math.min(x, window.innerWidth - 250)), y: Math.max(10, Math.min(y, window.innerHeight - 340)) });
+    setMachineMenu({ hostId: host.id, x: Math.max(10, Math.min(x, window.innerWidth - 250)), y: Math.max(10, Math.min(y, window.innerHeight - 410)) });
   };
   const openTunnels = (hostId = '', mode = 'local', tab = 'active') => {
     if (accessLock.current || (tunnelLock.current && tab === 'new')) return;
@@ -522,12 +532,13 @@ function App() {
         <button role="menuitem" onClick={() => openTunnels(machineMenu.hostId, 'local', 'active')}><History size={15} /><span><strong>Active & saved forwards</strong><small>Stop, repeat, or edit notes</small></span></button>
         <button role="menuitem" onClick={() => { const host = state.hosts.find(host => host.id === machineMenu.hostId); setMachineMenu(null); openHost(host); }}><Pencil size={15} /><span><strong>Edit machine</strong><small>Rename, address, or destination folder</small></span></button>
         <button role="menuitem" onClick={() => { const host = state.hosts.find(host => host.id === machineMenu.hostId); setMachineMenu(null); openAccess(host); }}><KeyRound size={15} /><span><strong>SSH access</strong></span></button>
+        {state.environment?.platform === 'darwin' && <button role="menuitem" onClick={() => { if (operationLocked()) return; setInstallHostId(machineMenu.hostId); setQuickHost(null); setMachineMenu(null); setModal('install'); }}><Download size={15} /><span><strong>Install on this device…</strong></span></button>}
         <button role="menuitem" className="danger-button" onClick={async () => { if (!removeArmed) { setRemoveArmed(true); return; } const id = machineMenu.hostId; setMachineMenu(null); await action('removeHost', id, 'Machine removed.'); }}><Trash2 size={15} /><span><strong>{removeArmed ? 'Confirm remove machine' : 'Remove machine…'}</strong></span></button>
       </div>}
       {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}><section className={`modal ${modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' || modal === 'install' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on another Mac' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy || macInstallBusy} onClick={closeModal}><X size={17} /></button></div>
+        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on this device' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy || macInstallBusy} onClick={closeModal}><X size={17} /></button></div>
         {modal === 'tunnels' && <TunnelPanel key={`${tunnelEntry.hostId}-${tunnelEntry.mode}-${tunnelEntry.tab}`} bridge={bridge} host={state.hosts.find((host) => host.id === tunnelEntry.hostId)} initialMode={tunnelEntry.mode} initialTab={tunnelEntry.tab} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} onClose={closeModal} blocked={settingUpAccess || sending} />}
-        {modal === 'install' && <MacInstallPanel bridge={bridge} hosts={state.hosts} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy} />}
+        {modal === 'install' && <MacInstallPanel key={installHostId} bridge={bridge} hosts={state.hosts} initialHostId={installHostId} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy} />}
         {modal === 'text' && <form onSubmit={async (event) => { event.preventDefault(); const next = await addText(textDraft); if (next) setModal(null); }}><p className="modal-intro">Paste a note, a link, or something worth keeping. It will wait on your shelf.</p><textarea className="text-editor" autoFocus rows={8} placeholder="Put your words here…" value={textDraft} onChange={(event) => setTextDraft(event.target.value)} /><div className="modal-actions"><span className="keyboard-hint">⌘ / Ctrl + V also works on the shelf</span><button className="primary-button" disabled={!textDraft.trim() || !!busy}><Plus size={14} /> Add to shelf</button></div></form>}
         {modal === 'host' && <form onSubmit={saveMachine}>
           <p className="modal-intro">Use a LAN name, a Tailscale IP, or any SSH address. A successful SSH check makes it ready to receive.</p>
@@ -562,7 +573,6 @@ function App() {
           <label className="setting-row"><div><strong>Display density</strong><p>Choose how much detail appears in each row.</p></div><select aria-label="View size" disabled={!!busy} value={state.settings?.viewMode || 'expanded'} onChange={(event) => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label>
           <div className="setting-row"><div><strong>Enable Clipboard tools</strong><p>Optional history, favourites and snippets. Off by default. Turning this off stops recording and keeps saved items; re-enable history separately when ready.</p></div><button role="switch" aria-checked={state.clipboardTools?.enabled === true} aria-label="Enable Clipboard tools" disabled={!!busy} className={`switch ${state.clipboardTools?.enabled ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { enabled: !state.clipboardTools?.enabled })}><span /></button></div>
           <div className="setting-row"><div><strong>Show Clipboard tab</strong><p>Hide the tab to keep the workspace focused. Hiding does not pause history that you have enabled. {state.clipboardTools?.historyEnabled ? 'Automatic history is on.' : 'Automatic history is off.'}</p></div><button role="switch" aria-checked={state.clipboardTools?.showTab !== false} aria-label="Show Clipboard tab" disabled={!!busy || !state.clipboardTools?.enabled} className={`switch ${state.clipboardTools?.showTab !== false ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { showTab: state.clipboardTools?.showTab === false })}><span /></button></div>
-          {state.environment?.platform === 'darwin' && <div className="setting-row"><div><strong>Install on another Mac</strong><p>Copy this app over SSH to a saved Mac. Review the machine and install folder before sending.</p></div><button className="quiet-button" disabled={!!busy || sending || tunnelBusy || macInstallBusy} onClick={() => { setQuickHost(null); setMachineMenu(null); setModal('install'); }}><Download size={15} /> Install on another Mac</button></div>}
           <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. Clipboard tools are optional. After enabling them in Settings, separately choose automatic history in Clipboard; enabling tools alone does not record anything. When enabled, it saves copies locally and pauses during editing or password setup. Copies are never sent automatically.</p></div></div>
           <div className="settings-note"><KeyRound size={17} /><div><strong>Ready means SSH is verified.</strong><p>Use a machine’s Access button to connect with an SSH key, set one up with a password used once, or securely save a password. SSH must already be running, and the machine’s fingerprint must be trusted. Keep Tailscale running for Tailscale routes. Drop items on a ready machine or press Send to transfer them.</p></div></div>
           {!isDemo && <div className="settings-note"><MousePointer2 size={17} /><div><strong>A keyboard shortcut, too.</strong><p>{state.environment?.shortcutAvailable === false ? `The keyboard shortcut couldn’t register on this device. Open ${productName} from the tray. Escape tucks it away.` : `Press ⌘ / Ctrl + Shift + Space to show or hide ${productName}. Escape also hides it.`}</p></div></div>}

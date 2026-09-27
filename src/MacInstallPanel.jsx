@@ -16,7 +16,7 @@ export default function MacInstallPanel({ bridge, hosts, initialHostId = '', onB
   const lock = useRef(false);
   const mounted = useRef(true);
   const busy = checking || installing || activeStatuses.has(snapshot?.operation?.status);
-  const candidates = hosts.filter(host => host.os !== 'windows' && host.user);
+  const candidates = hosts.filter(host => host.user || host.id === initialHostId);
   const currentHost = hosts.find(host => host.id === hostId);
   const operation = snapshot?.operation;
 
@@ -59,10 +59,10 @@ export default function MacInstallPanel({ bridge, hosts, initialHostId = '', onB
 
   if (snapshot?.available === false) return <div className="mac-install-panel"><p className="modal-intro">{snapshot.reason || 'Install on another Mac is available from the installed macOS app.'}</p><button className="quiet-button" onClick={onClose}>Done</button></div>;
   return <div className="mac-install-panel" aria-busy={busy}>
-    <p className="modal-intro">Install this app on a saved Mac over SSH. Check the destination first, then choose Install.</p>
+    <p className="modal-intro">Installation currently supports Macs only. Check the selected device, then review its destination before choosing Install.</p>
     <p className="mac-install-help">Only the app bundle is copied. Your clipboard, saved passwords, SSH keys, shelf and local settings stay on this device. The other Mac needs Remote Login and trusted SSH access.</p>
     {!plan && !busy && operation?.status !== 'installed' && <form onSubmit={checkMac}>
-      <label className="field">Saved machine<select aria-label="Mac to install on" value={hostId} onChange={event => { setHostId(event.target.value); setError(''); }} disabled={blocked}>
+      <label className="field">Selected device<select aria-label="Device to install on" value={hostId} onChange={event => { setHostId(event.target.value); setError(''); }} disabled={blocked || !!initialHostId}>
         <option value="">Choose a saved machine…</option>
         {candidates.map(host => <option key={host.id} value={host.id}>{host.name} — {host.user}@{host.address}</option>)}
       </select></label>
