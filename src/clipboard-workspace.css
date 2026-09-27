@@ -1,0 +1,115 @@
+/* Density is content hierarchy, not smaller type. These rules intentionally override
+   the original panel's nested scrolling and stay within the existing palette. */
+.clipboard-pane.clipboard-redesign { position: relative; overflow: hidden; min-height: 0; gap: 8px; padding: 0; container: clipboard / size; }
+.clipboard-redesign .clipboard-heading { min-height: 32px; gap: 8px; }
+.clipboard-redesign .clipboard-heading h1 { font-size: 21px; letter-spacing: -.5px; }
+.clipboard-redesign .clipboard-toolbar { flex-wrap: nowrap; align-items: center; gap: 4px; }
+.clipboard-redesign .clipboard-toolbar .quiet-button { min-height: 30px; font-size: 11px; padding: 5px 8px; }
+.clipboard-redesign .clipboard-capture-state { min-height: 25px; font-size: 11px; }
+.clipboard-redesign .clipboard-capture-state > span { min-width: 0; }
+.clipboard-redesign .clipboard-capture-state .text-button { font-size: 11px; min-height: 25px; }
+.clipboard-redesign .clipboard-capture-state.active { color: var(--accent); }
+.clipboard-redesign .clipboard-capture-state .tiny-dot.ready { background: var(--accent); }
+.clipboard-redesign .clipboard-notice { font-size: 11px; }
+.clipboard-redesign .clipboard-query-row { display: flex; gap: 6px; min-width: 0; }
+.clipboard-redesign .clipboard-search { flex: 1; min-width: 0; padding: 8px 9px; min-height: 34px; }
+.clipboard-redesign .clipboard-search input { font-size: 12px; }
+.clipboard-redesign .clipboard-search:focus-within { outline-color: var(--accent); }
+.clipboard-redesign .clipboard-search > button { align-items: center; justify-content: center; min-width: 24px; min-height: 22px; }
+.clipboard-redesign .clipboard-filter-select { min-width: 74px; max-width: 94px; font-size: 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 7px; padding: 5px; }
+.clipboard-redesign .clipboard-filters { flex-wrap: nowrap; gap: 3px; }
+.clipboard-redesign .clipboard-filters > button { min-height: 28px; padding: 5px 8px; font-size: 11px; }
+.clipboard-redesign .clipboard-content { flex: 1 1 0; display: grid; grid-template-rows: minmax(72px, 1fr) minmax(80px, 115px); gap: 8px; min-height: 0; overflow: hidden; }
+.clipboard-redesign .clipboard-content:not(:has(.clipboard-detail)) { grid-template-rows: minmax(0, 1fr); }
+.clipboard-redesign .clipboard-list { min-height: 0; max-height: none; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scrollbar-width: auto; scrollbar-color: var(--line-strong) var(--surface); padding: 3px; border-radius: 9px; }
+.clipboard-redesign .clipboard-list:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.clipboard-redesign .clipboard-entry { min-height: 61px; padding: 9px 8px; gap: 9px; cursor: pointer; border-radius: 6px; }
+.clipboard-redesign .clipboard-entry-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.clipboard-redesign .clipboard-entry-copy > strong, .clipboard-redesign .clipboard-entry-copy > small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.clipboard-redesign .clipboard-entry-copy > strong { font-size: 12px; font-weight: 580; }
+.clipboard-redesign .clipboard-entry-copy > small { font-size: 11px; color: var(--muted); }
+.clipboard-redesign .clipboard-entry-meta { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 10px; margin: 0; flex-shrink: 0; }
+.clipboard-redesign .clipboard-entry-meta > svg { color: var(--ink); }
+.clipboard-redesign .clipboard-kind { width: 27px; height: 32px; }
+.clipboard-redesign .clipboard-detail { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.clipboard-redesign .clipboard-detail-heading { gap: 8px; min-height: 29px; padding: 5px 10px; font-size: 11px; }
+.clipboard-redesign .clipboard-detail-heading strong { color: var(--muted); font-weight: 550; }
+.clipboard-redesign .clipboard-detail-heading > span { margin-left: auto; font-size: 10px; }
+.clipboard-redesign .clipboard-detail-body { flex: 1; min-height: 0; max-height: none; overflow: auto; scrollbar-gutter: stable; scrollbar-width: auto; scrollbar-color: var(--line-strong) var(--surface); overscroll-behavior: contain; padding: 10px; }
+.clipboard-redesign .clipboard-detail-body pre { font-size: 12px; line-height: 1.65; }
+.clipboard-redesign .clipboard-detail-body img { max-height: 100%; width: auto; height: auto; }
+.clipboard-redesign .clipboard-detail-body li { font-size: 11px; gap: 7px; }
+.clipboard-redesign .clipboard-detail-body li > svg { flex-shrink: 0; margin-top: 3px; }
+.clipboard-redesign .clipboard-exact { font-family: var(--font-mono, ui-monospace, monospace); }
+.clipboard-redesign .clipboard-detail-metadata { display: flex; flex-direction: column; gap: 3px; font-size: 10px; line-height: 1.5; padding: 7px 10px; border-top: 1px solid var(--line); color: var(--muted); }
+.clipboard-redesign .clipboard-selection-actions { display: flex; flex-direction: column; gap: 6px; padding-top: 1px; }
+.clipboard-redesign .clipboard-action-primary { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.clipboard-redesign .clipboard-action-primary > button:first-child { min-width: 71px; }
+.clipboard-redesign .clipboard-action-primary > button { min-height: 32px; padding: 6px 8px; font-size: 11px; }
+.clipboard-redesign .clipboard-action-secondary { display: flex; gap: 16px; align-items: center; min-height: 26px; }
+.clipboard-redesign .clipboard-action-secondary > button { font-size: 11px; min-height: 26px; }
+.clipboard-redesign .clipboard-pin-action { color: var(--muted); }
+.clipboard-redesign .clipboard-pin-action.pinned { color: var(--ink); }
+.clipboard-redesign .clipboard-delete { color: var(--muted); margin-left: auto; }
+.clipboard-redesign .clipboard-delete:hover { color: var(--danger); }
+.clipboard-redesign .clipboard-feedback { min-height: 0; flex-shrink: 0; }
+.clipboard-redesign .clipboard-feedback:empty { display: none; }
+.clipboard-redesign .clipboard-message { font-size: 11px; padding: 6px 8px; line-height: 1.45; }
+.clipboard-redesign .clipboard-message.success { color: var(--accent); }
+.clipboard-redesign .clipboard-message button { min-width: 23px; min-height: 23px; align-items: center; justify-content: center; }
+.clipboard-redesign .clipboard-bottom { min-height: 26px; font-size: 11px; border-top: 1px solid var(--line); padding-top: 3px; flex-wrap: nowrap; }
+.clipboard-redesign .clipboard-bottom > button { font-size: 11px; min-height: 26px; }
+.clipboard-redesign .clipboard-clear-confirm { position: absolute; inset: auto 0 0; z-index: 4; display: block; padding: 16px; background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 10px; }
+.clipboard-redesign .clipboard-clear-confirm strong { font-size: 13px; }
+.clipboard-redesign .clipboard-clear-confirm p { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 8px 0 12px; }
+.clipboard-redesign .clipboard-clear-confirm > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.clipboard-redesign .clipboard-clear-confirm button { min-height: 32px; font-size: 11px; }
+.clipboard-redesign .clipboard-editor-backdrop { position: absolute; inset: 0; z-index: 5; background: var(--canvas); display: flex; align-items: flex-start; }
+.clipboard-redesign .clipboard-editor { width: 100%; max-height: 100%; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; padding: 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); }
+.clipboard-redesign .clipboard-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.clipboard-redesign .clipboard-editor h2 { font-size: 16px; letter-spacing: -.2px; margin: 0; font-weight: 580; }
+.clipboard-redesign .clipboard-preferences, .clipboard-redesign .clipboard-snippet { border: 0; padding: 0; border-radius: 0; background: transparent; }
+.clipboard-redesign .clipboard-editor p { font-size: 12px; line-height: 1.65; color: var(--muted); margin: 0 0 14px; }
+.clipboard-redesign .clipboard-preferences > label { font-size: 12px; margin: 16px 0; }
+.clipboard-redesign .clipboard-preferences select { font-size: 12px; min-height: 34px; }
+.clipboard-redesign .clipboard-snippet .field { font-size: 12px; margin-bottom: 14px; }
+.clipboard-redesign .clipboard-snippet input, .clipboard-redesign .clipboard-snippet textarea { font-size: 12px; }
+.clipboard-redesign .clipboard-snippet textarea { min-height: 120px; max-height: 260px; }
+.clipboard-redesign .clipboard-preview-toggle { display: none; }
+.clipboard-mode-compact.clipboard-redesign { gap: 7px; }
+.clipboard-mode-compact .clipboard-heading h1 { font-size: 19px; }
+.clipboard-mode-compact .clipboard-list { padding: 0 3px; border-radius: 6px; }
+.clipboard-mode-compact .clipboard-entry { min-height: 38px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 5px 6px; gap: 7px; }
+.clipboard-mode-compact .clipboard-entry.selected { box-shadow: inset 2px 0 var(--accent); }
+.clipboard-mode-compact .clipboard-entry-copy > small, .clipboard-mode-compact .clipboard-entry-meta > span { display: none; }
+.clipboard-mode-compact .clipboard-kind { width: 22px; height: 24px; background: transparent; }
+.clipboard-mode-compact .clipboard-preview-toggle { display: inline-flex; }
+.clipboard-mode-compact .clipboard-content { grid-template-rows: minmax(0, 1fr); }
+.clipboard-mode-compact.preview-open .clipboard-content { grid-template-rows: minmax(60px, 1fr) minmax(80px, 130px); }
+.clipboard-mode-expanded .clipboard-content { grid-template-rows: minmax(85px, 1fr) minmax(100px, 170px); }
+.clipboard-mode-expanded .clipboard-entry { min-height: 66px; }
+@container clipboard (min-width: 610px) {
+  .clipboard-redesign:not(.clipboard-mode-compact) .clipboard-content { grid-template-columns: minmax(230px, 1fr) minmax(250px, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .clipboard-redesign:not(.clipboard-mode-compact) .clipboard-content:not(:has(.clipboard-detail)) { grid-template-columns: 1fr; }
+  .clipboard-redesign .clipboard-selection-actions { flex-direction: row; align-items: center; justify-content: space-between; }
+  .clipboard-redesign .clipboard-action-secondary { gap: 13px; }
+}
+@container clipboard (max-height: 620px) and (max-width: 609px) {
+  .clipboard-mode-balanced:not(.preview-open) .clipboard-detail { display: none; }
+  .clipboard-mode-balanced:not(.preview-open) .clipboard-content { grid-template-rows: minmax(0, 1fr); }
+  .clipboard-mode-balanced .clipboard-preview-toggle { display: inline-flex; }
+}
+@container clipboard (max-width: 350px) {
+  .clipboard-redesign .clipboard-toolbar .quiet-button > span { display: none; }
+  .clipboard-redesign .clipboard-toolbar .quiet-button { width: 30px; }
+  .clipboard-redesign .clipboard-filters { justify-content: space-between; gap: 0; }
+  .clipboard-redesign .clipboard-filters > button { padding-inline: 5px; }
+}
+@media (pointer: coarse) {
+  .clipboard-redesign .clipboard-entry { min-height: 46px; }
+  .clipboard-redesign button, .clipboard-redesign .icon-button { min-height: 40px; }
+  .clipboard-redesign .icon-button { min-width: 40px; }
+}
+
+.clipboard-redesign .clipboard-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.clipboard-redesign .clipboard-feedback:has(> .clipboard-sr-only:only-child) { height: 0; margin-block: -4px; }

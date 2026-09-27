@@ -6,6 +6,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const { pathToFileURL } = require('node:url');
+const { endpointKey } = require('../desktop/password-auth.cjs');
+const siteHost = { id: 'browser-test-host', name: 'Browser fixture', address: 'fixture.invalid', user: 'fixture', port: 22 };
 
 const desktop = path.join(__dirname, '..', 'desktop');
 const mainSource = fs.readFileSync(path.join(desktop, 'main.cjs'), 'utf8');
@@ -68,10 +70,10 @@ async function controller(options = {}) {
     globalShortcut: { register: (key, callback) => { record('shortcutRegister', key); shortcuts.set(key, callback); return true; }, unregisterAll: () => record('shortcutUnregister') },
     ipcMain: { handle: (key, callback) => handlers.set(key, callback) },
     dialog: { showErrorBox: (...args) => record('errorDialog', ...args), showOpenDialog: async () => { throw new Error('No native dialogs are permitted in controller tests.'); }, showSaveDialog: async () => { throw new Error('No native dialogs are permitted in controller tests.'); } },
-    shell: { openPath: () => { throw new Error('No profile access is permitted in controller tests.'); } },
+    shell: { openPath: () => { throw new Error('No profile access is permitted in controller tests.'); }, openExternal: async url => { record('openExternal', url); if (options.openExternalError) throw new Error(options.openExternalError); } },
     clipboard: { read: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
   };
-  const initialState = { hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
+  const initialState = { hosts: options.activeTunnels?.length ? [{ ...siteHost }] : [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
   let fakeService;
   class FakeService {
     constructor() { record('serviceCreated'); this.state = initialState; fakeService = this; }
@@ -79,7 +81,7 @@ async function controller(options = {}) {
     async refreshHosts() { return this.state; }
     async probeHosts() { return this.state; }
   }
-  let workerOptions, historyOptions;
+  let workerOptions, historyOptions, fakeTunnels;
   const modules = {
     '../package.json': { productName: options.productName || 'DropHarbor' },
     electron,
@@ -91,7 +93,8 @@ async function controller(options = {}) {
     './clipboard.cjs': { captureClipboard: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
     './config.cjs': { createConfig: () => ({}), importConfiguration: async () => initialState },
     './migrate.cjs': { migrateLegacyData: async () => undefined },
-    './tunnels.cjs': { TunnelManager: class { constructor() { this.initialized = Promise.resolve(); } async getState() { return { active: [], history: [] }; } async stop(id) { record('tunnelStop', id); } async shutdown() { record('tunnelsShutdown'); } } },
+    './tunnels.cjs': { TunnelManager: class { constructor() { fakeTunnels = this; this.state = { active: options.activeTunnels || [], history: [] }; this.initialized = Promise.resolve(); } get active() { return new Map(this.state.active.map(view => [view.id, { view: { ...view, hostId: siteHost.id }, endpoint: endpointKey(siteHost) }])); } snapshot() { return this.state; } async getState() { return this.state; } async stop(id) { record('tunnelStop', id); this.state.active = this.state.active.filter(tunnel => tunnel.id !== id); } async shutdown() { record('tunnelsShutdown'); } } },
+    './tunnel-site.cjs': require('../desktop/tunnel-site.cjs'),
     './clipboard-history.cjs': { ClipboardHistory: class { constructor(options) { historyOptions = options; this.initialized = Promise.resolve(); } async tick() {} } },
     './worker.cjs': { acquireWorker: async args => {
       workerOptions = args; record('workerAcquire', args.background);
@@ -119,7 +122,7 @@ async function controller(options = {}) {
     assert.ok(poll, 'normal operation installs cursor sampling');
     for (const x of [0, 50, 130, 50, 0, 60, 140, 60, 0, 60, 150]) { clock += 32; cursor = { x: 300 + x, y: 200 }; poll.callback(); }
   };
-  return { app, calls, windows, trays, timers, shortcuts, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, advance: milliseconds => { clock += milliseconds; } };
+  return { app, calls, windows, trays, timers, shortcuts, handlers, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, tunnels: fakeTunnels, advance: milliseconds => { clock += milliseconds; } };
 }
 
 test('actual controller shows on a shake and hides on a later shake while respecting cooldown', async () => {
@@ -247,4 +250,68 @@ test('forwarding setup blocks connection mutations but permits status and Stop',
 test('quitting closes owned tunnels before releasing the worker lock', async()=>{
   const c=await controller(); let prevented=false; c.app.emit('before-quit',{preventDefault(){prevented=true;}}); await flush(); await flush();
   assert.equal(prevented,true); const types=c.calls.map(call=>call.type); assert.ok(types.indexOf('tunnelsShutdown')<types.indexOf('workerClose')); assert.ok(types.includes('quit'));
+});
+
+test('site IPC opens only a running local tunnel and rejects stale or forged sessions', async () => {
+  const id = '04bd066c-be64-4d07-acf9-0e4a12e025b1';
+  const tunnel = { id, mode: 'local', status: 'running', listenPort: 1331 };
+  const c = await controller({ activeTunnels: [tunnel] });
+  const request = { id, scheme: 'http:', path: '/dashboard?view=all#latest' };
+  const result = await c.invoke('openTunnelSite', request);
+  assert.equal(result.url, 'http://127.0.0.1:1331/dashboard?view=all#latest');
+  assert.deepEqual(c.calls.filter(call => call.type === 'openExternal').map(call => call.values[0]), [result.url]);
+  for (const update of [{ mode: 'remote' }, { status: 'failed' }, { status: 'starting' }]) {
+    c.tunnels.state.active = [{ ...tunnel, ...update }];
+    await assert.rejects(c.invoke('openTunnelSite', request), /not running/);
+  }
+  c.tunnels.state.active = [tunnel];
+  await assert.rejects(c.invoke('openTunnelSite', { ...request, id: '5a75928b-ae27-4b64-ae93-008d98b3d705' }), /not running/);
+  await assert.rejects(c.invoke('openTunnelSite', { ...request, path: '//example.com' }), /page path/);
+  await c.invoke('stopTunnel', id);
+  await assert.rejects(c.invoke('openTunnelSite', request), /not running/);
+  assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 1);
+});
+
+test('site IPC preserves sender, frame, and setup guards plus denied renderer navigation', async () => {
+  const id = '04bd066c-be64-4d07-acf9-0e4a12e025b1';
+  const c = await controller({ activeTunnels: [{ id, mode: 'local', status: 'running', listenPort: 1331 }] });
+  const request = { id, scheme: 'https:', path: '/' };
+  const handler = c.handlers.get('drift:openTunnelSite');
+  const window = c.windows[0];
+  const validFrame = { url: pathToFileURL(window.loadedFile).href };
+  for (const event of [{ sender: {}, senderFrame: validFrame }, { sender: window.webContents, senderFrame: { url: 'https://example.com/' } }, { sender: window.webContents }]) {
+    await assert.rejects(handler(event, request), /did not come from/);
+  }
+  for (const property of ['authenticationSetup', 'configurationImport', 'tunnelSetup']) {
+    c.service[property] = true;
+    await assert.rejects(c.invoke('openTunnelSite', request), /Wait for/);
+    c.service[property] = false;
+  }
+  assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 0);
+  assert.equal(window.windowOpenHandler({ url: 'https://example.com/' }).action, 'deny');
+  let navigationPrevented = false;
+  window.webContents.emit('will-navigate', { preventDefault() { navigationPrevented = true; } }, 'http://127.0.0.1:1331/');
+  assert.equal(navigationPrevented, true);
+});
+
+test('a browser launch failure remains an actionable IPC rejection', async () => {
+  const id = '04bd066c-be64-4d07-acf9-0e4a12e025b1';
+  const c = await controller({ activeTunnels: [{ id, mode: 'local', status: 'running', listenPort: 1331 }], openExternalError: 'No browser is available.' });
+  await assert.rejects(c.invoke('openTunnelSite', { id, scheme: 'http:', path: '/' }), /No browser is available/);
+});
+
+test('site IPC refuses the old session after its machine endpoint changes or disappears', async () => {
+  const id = '04bd066c-be64-4d07-acf9-0e4a12e025b1';
+  const c = await controller({ activeTunnels: [{ id, mode: 'local', status: 'running', listenPort: 1331 }] });
+  const request = { id, scheme: 'http:', path: '/' };
+  for (const change of [{ address: 'replacement.invalid' }, { user: 'another-user' }, { port: 2222 }, { sshAlias: 'another-alias' }]) {
+    c.service.state.hosts = [{ ...siteHost, ...change }];
+    await assert.rejects(c.invoke('openTunnelSite', request), /connection details changed/);
+  }
+  c.service.state.hosts = [];
+  await assert.rejects(c.invoke('openTunnelSite', request), /was removed/);
+  assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 0);
+  c.service.state.hosts = [{ ...siteHost, name: 'A new display name', destination: '~/Downloads' }];
+  await assert.doesNotReject(c.invoke('openTunnelSite', request));
+  assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 1);
 });

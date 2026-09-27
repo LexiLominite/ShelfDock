@@ -11,6 +11,7 @@ const { migrateLegacyData } = require('./migrate.cjs');
 const { acquireWorker } = require('./worker.cjs');
 const { ClipboardHistory } = require('./clipboard-history.cjs');
 const { TunnelManager } = require('./tunnels.cjs');
+const { tunnelSiteURL, assertTunnelSiteEndpoint } = require('./tunnel-site.cjs');
 
 const { productName = 'DropHarbor' } = require('../package.json');
 // Retain the existing data directory and singleton identity across editions.
@@ -148,6 +149,14 @@ if (singleton) app.whenReady().then(async () => {
   }
   for (const [method, operation] of Object.entries({ getClipboardHistory: options => clipboardHistory.getState(options), updateClipboardPreferences: patch => clipboardHistory.updatePreferences(patch), captureClipboardHistory: () => clipboardHistory.capture(), getClipboardEntry: id => clipboardHistory.detail(id), copyClipboardEntry: request => clipboardHistory.copy(request), setClipboardPinned: request => clipboardHistory.setPinned(request), removeClipboardEntry: id => clipboardHistory.remove(id), clearClipboardHistory: () => clipboardHistory.clearUnpinned(), saveClipboardSnippet: request => clipboardHistory.saveSnippet(request), addClipboardEntryToShelf: async id => decorate(await clipboardHistory.addToShelf(id, service)) })) safeHandler(method, operation);
   for (const [method, operation] of Object.entries({ getTunnels: () => tunnels.getState(), startTunnel: request => tunnels.start(request), stopTunnel: id => tunnels.stop(id), restartTunnel: id => tunnels.restart(id), removeTunnelHistory: id => tunnels.removeHistory(id), updateTunnelNote: request => tunnels.updateNote(request) })) safeHandler(method, operation);
+  safeHandler('openTunnelSite', async request => {
+    const state = await service.getState();
+    const url = tunnelSiteURL(request, tunnels.snapshot());
+    const record = tunnels.active.get(request.id);
+    assertTunnelSiteEndpoint(record, state.hosts.find(host => host.id === record?.view.hostId));
+    await shell.openExternal(url);
+    return { url };
+  });
   safeHandler('pickFiles', async () => {
     const selection = await dialog.showOpenDialog(window, {
       title: `Add files to ${productName}`, properties: ['openFile', 'openDirectory', 'multiSelections'],

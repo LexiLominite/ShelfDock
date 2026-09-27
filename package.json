@@ -15,7 +15,9 @@
     "package:mac": "npm run build && electron-builder --mac zip --arm64 --publish never",
     "package:win": "npm run build && electron-builder --win portable --x64 --publish never",
     "package:linux": "npm run build && electron-builder --linux tar.gz --x64 --publish never",
-    "package:linux-arm": "npm run build && electron-builder --linux tar.gz --arm64 --publish never"
+    "package:linux-arm": "npm run build && electron-builder --linux tar.gz --arm64 --publish never",
+    "test:ui": "node tests/ui/flows.cjs && node tests/ui/clipboard.cjs",
+    "test:ui:screenshots": "node tests/ui/screenshots.cjs"
   },
   "dependencies": {
     "lucide-react": "1.48.0",
@@ -26,6 +28,7 @@
   "devDependencies": {
     "electron": "44.4.5",
     "electron-builder": "26.15.3",
+    "playwright": "^1.62.1",
     "vite": "8.3.1"
   },
   "build": {
