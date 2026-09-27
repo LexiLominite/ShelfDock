@@ -1,4 +1,15 @@
-# DropHarbor / lex-drift v0.3.0 verification
+# DropHarbor / lex-drift v0.4.0 verification
+
+Version 0.4.0 redesigns machine cards, adds the small website URL bar and one-click saved sites, and improves clipboard density, scrolling and keyboard actions. The final renderer build and all headless UI checks passed, including the last Balanced preview-height change. See [UI design, screenshots and verification](docs/UI_REDESIGN.md).
+
+- 175 automated Node tests passed for the implementation, including native browser-opening guards, endpoint-bound repeat, forwarding races, clipboard/configuration, shelf Undo and worker exclusivity.
+- Three density modes and eight Clipboard browser groups passed in headless Chrome. UI checks cover keyboard/context menus, reduced motion, URL drop isolation, per-host drafts, Stop during startup, saved repeat, exact shelf drop and batch selection, clear scope and workspace-state persistence.
+- The new URL bar was exercised against a trusted live POSIX host over Tailscale with production SSH forwarding. Go and saved repeat each returned the expected HTTP nonce, Stop closed the listener, and the owned remote fixture and SSH processes were cleaned up. The browser adapter fetched the validated address to keep the desktop quiet; native validation/dispatch were separately tested.
+- Grok 4.7 reviewed the design. The final renderer build was run directly after explicit user authorization following a blocked Grok wrapper execution.
+
+Package and installed-app results are recorded in the [v0.4.0 release notes](https://github.com/LexiLominite/DropHarbor/releases/tag/v0.4.0). Cross-built Windows/Linux packages do not establish native desktop validation. Packages remain unsigned private prereleases; neither repository visibility nor clipboard opt-in defaults change.
+
+## Earlier validated evidence: v0.3.0
 
 This version adds an equally prominent encrypted Clipboard workspace, one-time and saved password access, multi-machine sends, local/remote SSH forwarding with saved history/notes, and More deliberate defaults. All 148 automated tests and the production renderer build passed for this revision. The release verification compares packaged source and architectures, checks archive integrity, and verifies uploaded SHA-256 hashes.
 
