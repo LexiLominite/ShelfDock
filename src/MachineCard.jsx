@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Globe, KeyRound, MoreHorizontal, Folder, Square, X, Check } from 'lucide-react';
+import React, { useEffect, useId, useRef, useState } from 'react';
+import { Globe, ChevronDown, KeyRound, MoreHorizontal, Folder, Square, X, Check } from 'lucide-react';
 import QuickConnect from './QuickConnect';
 import { latestSavedPlan, repeatSavedForward, stopForward } from './quick-connect.mjs';
 
@@ -8,23 +8,26 @@ const routeLabel = route => ({tailscale:'Tailscale',lan:'LAN',ssh:'SSH'})[route]
 
 export default function MachineCard({ host, selected, batchSelected, batchDisabled, onSelect, onBatch, onAccess, onViewForwards, onMenu, menuOpen, dropState, dropHandlers, dragging, blocked, viewMode, bridge, snapshot, onSnapshot, onBusyChange, operationLocked, quickOpen, onQuickOpen, onQuickClose, quickMode = 'local', quickAdvanced = false, quickRevision = 0, receipts = [], items = [] }) {
   const [message, setMessage] = useState('');
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsId = useId();
   const [connecting, setConnecting] = useState(false);
   const [stopping, setStopping] = useState([]);
   const trigger = useRef(null);
   const popup = useRef(null);
   const alive = useRef(true);
   const expanded = viewMode === 'large';
+  useEffect(() => { setDetailsOpen(false); }, [viewMode]);
   const active = snapshot.active.filter(entry => entry.hostId === host.id && ['starting','running'].includes(entry.status));
   const localActive = active.find(entry => entry.mode === 'local');
   const saved = latestSavedPlan(snapshot, host.id, 'local');
   const metadata = `${host.user ? `${host.user}@` : ''}${host.address}:${host.port || 22} · ${routeLabel(host.route)} · ${host.destination || '~/Desktop'} · ${statusLabel(host.status)}`;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {
-    if (!quickOpen || expanded) return;
+    if (!quickOpen) return;
     const outside = event => { if (!popup.current?.contains(event.target) && !trigger.current?.contains(event.target) && !operationLocked()) onQuickClose(); };
     document.addEventListener('pointerdown', outside);
     return () => document.removeEventListener('pointerdown', outside);
-  }, [quickOpen, expanded, onQuickClose, operationLocked]);
+  }, [quickOpen, onQuickClose, operationLocked]);
   const close = () => { onQuickClose(); trigger.current?.focus(); };
   const connect = async event => {
     event.stopPropagation();
@@ -63,16 +66,17 @@ export default function MachineCard({ host, selected, batchSelected, batchDisabl
       </div>
       <div className="machine-tags" title={metadata}>
         <span className="machine-pill">{routeLabel(host.route)}</span><span className="machine-pill machine-path"><Folder size={10} />{host.destination || '~/Desktop'}</span>
+        {expanded && <button className="machine-pill machine-details-toggle" aria-label={`${detailsOpen ? 'Hide' : 'Show'} details for ${host.name}`} aria-expanded={detailsOpen} aria-controls={detailsOpen ? detailsId : undefined} disabled={dragging} onClick={() => setDetailsOpen(value => !value)}><ChevronDown size={11} /> Details</button>}
         {active.slice(0,1).map(entry => <button key={entry.id} className="live-forward-chip" disabled={stopping.includes(entry.id) || dragging} aria-label={`Stop ${entry.mode} forward on ${host.name} port ${entry.listenPort}`} title={`${entry.mode === 'remote' ? 'Remote' : 'Local'} forward · Stop :${entry.listenPort}`} onClick={event => stop(event,entry.id)}><Square size={9} />{entry.status === 'starting' ? 'Starting' : 'Live'} · :{entry.listenPort}</button>)}
         {active.length > 1 && <button className="live-forward-chip forwards-overflow" disabled={dragging} onClick={event => {event.stopPropagation();onViewForwards();}} aria-label={`View all ${active.length} forwards on ${host.name}`} title="View and stop each forward">+{active.length-1}</button>}
       </div>
     </div>
     {dropState && <div className="machine-drop-hint" aria-live="polite">{host.status === 'ready' ? `Release to send to ${host.destination || '~/Desktop'}` : host.status === 'offline' ? 'Machine unavailable' : 'Set up SSH access first'}</div>}
     {message && <p className="machine-inline-error" role="alert">{message}<button aria-label="Dismiss connection error" onClick={() => setMessage('')}><X size={12} /></button></p>}
-    {(expanded || quickOpen) && <div ref={popup} className={`machine-quick-connect ${expanded ? 'inline' : 'popover'}`} role={expanded ? undefined : 'region'} aria-label={`Quick connect to ${host.name}`}>
-      <QuickConnect key={`${host.id}-${quickRevision}`} bridge={bridge} host={host} snapshot={snapshot} onSnapshot={onSnapshot} onBusyChange={onBusyChange} blocked={blocked} autoFocus={!expanded} expanded={expanded} initialAdvanced={quickAdvanced} initialMode={quickMode} onClose={expanded ? undefined : close} />
+    {quickOpen && <div ref={popup} className="machine-quick-connect popover" role="region" aria-label={`Quick connect to ${host.name}`}>
+      <QuickConnect key={`${host.id}-${quickRevision}`} bridge={bridge} host={host} snapshot={snapshot} onSnapshot={onSnapshot} onBusyChange={onBusyChange} blocked={blocked} autoFocus expanded={false} initialAdvanced={quickAdvanced} initialMode={quickMode} onClose={close} />
     </div>}
-    {expanded && <div className="machine-activity"><span className="machine-endpoint" title={metadata}>{host.user ? `${host.user}@` : ''}{host.address}:{host.port || 22}</span><strong>Recent transfers</strong>{receipts.length ? receipts.slice(0,3).map((entry,index) => {
+    {expanded && detailsOpen && <div id={detailsId} className="machine-activity"><span className="machine-endpoint" title={metadata}>{host.user ? `${host.user}@` : ''}{host.address}:{host.port || 22}</span><strong>Recent transfers</strong>{receipts.length ? receipts.slice(0,3).map((entry,index) => {
       const names = (entry.itemIds || []).map(id => items.find(item => item.id === id)?.name).filter(Boolean);
       return <div className="machine-receipt" key={entry.id || index}><span title={names.join(', ')}>{names.length === entry.itemCount ? names.join(', ') : `${entry.itemCount || entry.itemIds?.length || 0} items`}</span><small>{entry.status === 'sent' ? 'Sent' : entry.status === 'failed' ? 'Failed' : 'Sending'}{entry.timestamp ? ` · ${new Date(entry.timestamp).toLocaleDateString([], {month:'short',day:'numeric'})}` : ''}</small></div>;
     }) : <p>No transfers recorded yet.</p>}</div>}

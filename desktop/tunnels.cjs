@@ -85,6 +85,7 @@ class TunnelManager {
   }
   assertIdle() {
     if (this.closed) throw new Error('Forwarding is shutting down.');
+    if (this.service.macInstallation) throw new Error('Wait for Mac installation to finish before starting a forward.');
     if (this.service.authenticationSetup || this.service.configurationImport) throw new Error('Wait for machine access or configuration setup to finish before starting a forward.');
   }
   async start(input) { return this.startPlan(input); }

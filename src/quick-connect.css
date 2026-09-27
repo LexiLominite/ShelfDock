@@ -4,7 +4,7 @@
 .quick-connect-heading strong { color:var(--ink); font-weight:600; }
 .quick-url-row { display:flex; align-items:stretch; gap:6px; min-width:0; flex-wrap:wrap; }
 .quick-connect input:not([type=checkbox]) { width:100%; min-width:0; min-height:32px; border:1px solid var(--line-strong); border-radius:6px; background:var(--canvas); color:var(--ink); padding:7px 8px; font:11px var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); }
-.quick-connect input::placeholder { color:var(--muted); opacity:.8; }
+.quick-connect input::placeholder { color:var(--muted); opacity:1; }
 .quick-connect .quick-url-input { flex:1 1 120px; width:auto; }
 .quick-connect .quick-go { min-width:44px; min-height:32px; padding:7px 10px; font-size:11px; white-space:nowrap; justify-content:center; }
 .quick-stop { display:flex; align-items:center; gap:4px; min-height:30px; border:1px solid var(--line-strong); border-radius:6px; padding:5px 7px; background:var(--surface-raised); color:var(--ink); font-size:10px; }
@@ -24,7 +24,7 @@
 .quick-remember { display:flex; align-items:center; gap:6px; min-height:24px; color:var(--muted); font-size:10px; }
 .quick-remember input { accent-color:var(--accent); }
 .quick-note-field { display:flex; flex-wrap:wrap; gap:4px; font-size:10px; color:var(--muted); }
-.quick-note-field span { opacity:.8; }
+.quick-note-field span { opacity:1; }
 .quick-notes { min-width:0; }
 .quick-notes summary { color:var(--muted); font-size:10px; cursor:pointer; padding:4px 0; }
 .quick-notes[open] summary { margin-bottom:6px; }

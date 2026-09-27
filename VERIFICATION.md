@@ -1,4 +1,17 @@
-# DropHarbor / lex-drift v0.4.0 verification
+# DropHarbor / lex-drift v0.4.1 verification
+
+Version 0.4.1 restores the original lavender, off-white and purple palette, makes Clipboard tools optional, adds reviewed Mac-to-Mac installation, and keeps machine details collapsed in Expanded view. See [palette and workflow notes, including all six before/after comparisons](docs/palette.md).
+
+- 212 automated Node tests passed. These include 20 installer cases covering real production shell commands against temporary fictional app bundles/home folders, with SSH and uploads intercepted locally. Coverage includes architecture/OS refusal, source bytes and endpoint binding, explicit personal-preset consent, no-overwrite races, single-use previews, guarded concurrency, checksum verification and owned cleanup.
+- Clipboard privacy checks cover new-install defaults, previous opt-in migration, missing/corrupt preferences, capture already in progress, disabled startup without history expiry, separate visibility and renewed recording consent. Native controller checks preserve the single worker and quiet background behavior.
+- Headless browser checks cover three machine densities, keyboard and drag/drop paths, quick-connect start/repeat/Stop, shelf Undo and batch transfer; 11 Clipboard groups include optional tools and visibility in every density. Mac installer checks cover destination review and preset consent, one pending install, disabled dialog dismissal, completion and failure, stale endpoints, existing app refusal, and absence on Windows/Linux.
+- Expanded view starts with details and forwarding closed. A per-machine Details toggle reveals recent transfers, with a drag guard and keyboard-accessible disclosure. Returning to Expanded does not reopen details.
+- 67 representative rendered contrast checks passed across three densities, including text, placeholders, control boundaries and keyboard focus. Browser/native startup colours match. This is targeted verification, not a whole-app accessibility certification.
+- Actual Grok 4.7 reviewed the palette and ran the renderer builds. Its response metadata identified `grok-4.7-build`; source inspection, tests and package verification remain independent checks.
+
+Package and installed-app results are recorded in the [v0.4.1 release notes](https://github.com/LexiLominite/DropHarbor/releases/tag/v0.4.1). No real remote Mac installation was performed: that convenience still needs a receiving-device trial. Windows/Linux packages are cross-built and need native desktop validation. Existing live-host forwarding/transfer evidence below was not repeated or relabeled as v0.4.1 evidence. Releases remain unsigned private prereleases.
+
+# Earlier evidence: v0.4.0
 
 Version 0.4.0 redesigns machine cards, adds the small website URL bar and one-click saved sites, and improves clipboard density, scrolling and keyboard actions. The final renderer build and all headless UI checks passed, including the last Balanced preview-height change. See [UI design, screenshots and verification](docs/UI_REDESIGN.md).
 

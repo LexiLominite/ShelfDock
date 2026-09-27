@@ -1,0 +1,474 @@
+{
+  "scope": "Representative rendered text, placeholders, input boundaries and focus states in all three densities; not a whole-app accessibility certification",
+  "checks": [
+    {
+      "selector": ".brand",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-main strong",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".route-tabs button.selected",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.508,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".footer-hint",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".density-picker select",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-search",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.338,
+      "minimum": 3
+    },
+    {
+      "selector": ".density-picker select",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.338,
+      "minimum": 3
+    },
+    {
+      "selector": ".machine-search input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.46,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .machine-main",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 4.681,
+      "minimum": 3
+    },
+    {
+      "selector": ".clipboard-entry-copy > strong",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.453,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-entry-meta",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.943,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-capture-state > span",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.999,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-action-primary .primary-button",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.347,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-filter-select",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 13.584,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-search input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.863,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-search",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.584,
+      "minimum": 3
+    },
+    {
+      "selector": ".clipboard-list",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 5.347,
+      "minimum": 3
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.137,
+      "minimum": 3
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 4.681,
+      "minimum": 3
+    },
+    {
+      "selector": ".brand",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".shelf-subtitle",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-main strong",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-pill",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.863,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".route-tabs button.selected",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.508,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".footer-hint",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".density-picker select",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-search",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.338,
+      "minimum": 3
+    },
+    {
+      "selector": ".density-picker select",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.338,
+      "minimum": 3
+    },
+    {
+      "selector": ".machine-search input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.46,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .machine-main",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 3
+    },
+    {
+      "selector": ".clipboard-entry-copy > strong",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.453,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-entry-copy > small",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.98,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-entry-meta",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.98,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-capture-state > span",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.999,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-action-primary .primary-button",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.347,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-search input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.863,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-search",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.584,
+      "minimum": 3
+    },
+    {
+      "selector": ".clipboard-list",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 5.347,
+      "minimum": 3
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.137,
+      "minimum": 3
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 4.681,
+      "minimum": 3
+    },
+    {
+      "selector": ".brand",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".shelf-subtitle",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-main strong",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-pill",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.863,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".route-tabs button.selected",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.508,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".footer-hint",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".density-picker select",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".machine-search",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.338,
+      "minimum": 3
+    },
+    {
+      "selector": ".density-picker select",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.338,
+      "minimum": 3
+    },
+    {
+      "selector": ".machine-search input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.46,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .machine-main",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 12.652,
+      "minimum": 3
+    },
+    {
+      "selector": ".clipboard-entry-copy > strong",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.453,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-entry-copy > small",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.943,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-entry-meta",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.943,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-capture-state > span",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 4.999,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-action-primary .primary-button",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 5.347,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-search input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.863,
+      "minimum": 4.5
+    },
+    {
+      "selector": ".clipboard-search",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.584,
+      "minimum": 3
+    },
+    {
+      "selector": ".clipboard-list",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 5.347,
+      "minimum": 3
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "text",
+      "pseudo": null,
+      "ratio": 11.891,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "text",
+      "pseudo": "::placeholder",
+      "ratio": 5.132,
+      "minimum": 4.5
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "border",
+      "pseudo": null,
+      "ratio": 3.137,
+      "minimum": 3
+    },
+    {
+      "selector": "[data-host-id=\"host-0\"] .quick-url-input",
+      "kind": "focus",
+      "pseudo": null,
+      "ratio": 4.681,
+      "minimum": 3
+    }
+  ]
+}

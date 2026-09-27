@@ -403,3 +403,26 @@ test('multi-machine preflight uses the final host list after an in-flight scan r
   release(); await refresh; await rejected;
   assert.equal(calls.filter(call => call.command === 'scp').length, 0); assert.equal(service.transferring, false); assert.equal(service.state.hosts.length, 0);
 });
+
+test('a Mac installation lock acquired after discovery was queued blocks resumed discovery and probing', async t => {
+  const { service, calls } = await fixture(t); service.state.environment.sshAvailable = true;
+  // Both methods yield at their initialized promise before reserving scan/probe ownership.
+  const refreshing = service.refreshHosts(); const probing = service.probeHosts(); service.macInstallation = true;
+  await assert.rejects(refreshing, /Mac installation/); await assert.rejects(probing, /Mac installation/);
+  assert.equal(calls.length, 0); assert.equal(service.scanPromise, null); assert.equal(service.probePromise, null);
+  await assert.rejects(service.saveHost({ name: 'Must not be saved', address: 'example.invalid', user: 'fixture' }), /Mac installation/);
+  await assert.rejects(service.updateSettings({ shakeEnabled: false }), /Mac installation/); assert.equal(service.state.hosts.length, 0); assert.equal(service.state.settings.shakeEnabled, true);
+  service.macInstallation = false;
+});
+
+test('discovery rechecks a Mac installation lock after waiting for the other discovery operation', async t => {
+  for (const kind of ['refresh', 'probe']) {
+    const { service, calls } = await fixture(t); service.state.environment.sshAvailable = true;
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    if (kind === 'refresh') service.probePromise = gate; else service.scanPromise = gate;
+    const pending = kind === 'refresh' ? service.refreshHosts() : service.probeHosts();
+    await new Promise(resolve => setImmediate(resolve)); service.macInstallation = true;
+    if (kind === 'refresh') service.probePromise = null; else service.scanPromise = null;
+    release(); await assert.rejects(pending, /Mac installation/); assert.equal(calls.length, 0); service.macInstallation = false;
+  }
+});

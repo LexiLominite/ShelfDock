@@ -3,9 +3,10 @@ import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, CheckCheck, ChevronDo
 import ClipboardPanel from './ClipboardPanel';
 import TunnelPanel from './TunnelPanel';
 import MachineCard from './MachineCard';
+import MacInstallPanel from './MacInstallPanel';
 
 const ITEM_MIME = 'application/x-drift-items';
-const emptyState = { hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
+const emptyState = { clipboardTools: { enabled: false, showTab: true, historyEnabled: false }, hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
 const demoState = {
   ...emptyState,
   hosts: [
@@ -30,6 +31,8 @@ function App() {
   const isDemo = !bridge;
   const [state, setState] = useState(isDemo ? demoState : emptyState);
   const [activeSection, setActiveSection] = useState('transfers');
+  const clipboardVisible = state.clipboardTools?.enabled === true && state.clipboardTools?.showTab !== false;
+  useEffect(() => { if (!clipboardVisible) setActiveSection('transfers'); }, [clipboardVisible]);
   const [clipboardEditing, setClipboardEditing] = useState(false);
   const [clipboardUIState, setClipboardUIState] = useState({ query: '', filter: 'all', selectedId: '', scrollTop: 0 });
   const [quickHost, setQuickHost] = useState(null);
@@ -64,6 +67,7 @@ function App() {
   const [tunnels, setTunnels] = useState({ active: [], history: [] });
   const [tunnelEntry, setTunnelEntry] = useState({ hostId: '', mode: 'local', tab: 'active' });
   const [tunnelBusy, setTunnelBusy] = useState(false);
+  const [macInstallBusy, setMacInstallBusy] = useState(false);
   const [undoClock, setUndoClock] = useState(Date.now);
   const [reveal, setReveal] = useState(false);
   const fileInput = useRef(null);
@@ -73,18 +77,20 @@ function App() {
   const clipboardLock = useRef(false);
   const accessLock = useRef(false);
   const tunnelLock = useRef(false);
+  const macInstallLock = useRef(false);
   const undoLock = useRef(false);
   const demoUndo = useRef(null);
   const machineMenuRef = useRef(null);
   const suppressPasteUntil = useRef(0);
   const modalRef = useRef(null);
   const closeModal = useCallback(() => {
-    if (accessLock.current || tunnelLock.current) return;
+    if (accessLock.current || tunnelLock.current || macInstallLock.current) return;
     setAccessPassword(''); setAccessError(''); setAccessHostId(''); setModal(null);
   }, []);
-  const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current, []);
+  const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current || macInstallLock.current, []);
   const closeQuick = useCallback(() => { if (!tunnelLock.current) setQuickHost(null); }, []);
   const setTunnelOperation = useCallback((value) => { tunnelLock.current = value; setTunnelBusy(value); }, []);
+  const setMacInstallOperation = useCallback(value => { macInstallLock.current = value; setMacInstallBusy(value); }, []);
   const applyTunnels = useCallback((next) => { if (next?.active && next?.history) setTunnels(next); }, []);
   const noticeNow = useCallback((message, kind = 'info') => {
     setNotice({ message, kind });
@@ -210,6 +216,7 @@ function App() {
       if (index >= 0) next.hosts[index] = host; else next.hosts.push(host);
     }
     if (method === 'removeHost') next.hosts = next.hosts.filter((host) => host.id !== value);
+    if (method === 'updateClipboardTools') { next.clipboardTools = { ...next.clipboardTools, ...value }; if (!next.clipboardTools.enabled) next.clipboardTools.historyEnabled = false; }
     if (method === 'updateSettings') next.settings = { ...next.settings, ...value };
     if (method === 'send' || method === 'sendMany') {
       for (const hostId of value.hostIds || [value.hostId]) next.history.unshift({ id: uid(), hostName: next.hosts.find((host) => host.id === hostId)?.name || 'Machine', itemCount: value.itemIds.length, status: 'failed', message: 'Demo preview: no files were transferred. Open the desktop application to send.', timestamp: new Date().toISOString() });
@@ -229,6 +236,7 @@ function App() {
     return applyState(await bridge[method](value));
   };
   const action = async (method, value, success) => {
+    if (macInstallLock.current) { noticeNow('Wait for Mac installation to finish.'); return null; }
     if (tunnelLock.current) { noticeNow('Wait for forwarding setup to finish.'); return null; }
     setBusy(method);
     try { const next = await call(method, value); if (success) noticeNow(success); return next; }
@@ -462,10 +470,10 @@ function App() {
         </div>
       </header>
 
-      <nav className="workspace-tabs" aria-label="Workspace"><button aria-current={activeSection === 'transfers' ? 'page' : undefined} className={activeSection === 'transfers' ? 'active' : ''} onClick={() => setActiveSection('transfers')}><Send size={15} /> Transfers{state.items.length > 0 && <span>{state.items.length}</span>}</button><button aria-current={activeSection === 'clipboard' ? 'page' : undefined} className={activeSection === 'clipboard' ? 'active' : ''} onClick={() => setActiveSection('clipboard')}><Clipboard size={15} /> Clipboard</button><label className="density-picker"><span>View</span><select aria-label="Display density" disabled={!!busy || tunnelBusy || dragging} value={state.settings?.viewMode || 'expanded'} onChange={event => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label></nav>
+      <nav className="workspace-tabs" aria-label="Workspace"><button aria-current={activeSection === 'transfers' || !clipboardVisible ? 'page' : undefined} className={activeSection === 'transfers' ? 'active' : ''} onClick={() => setActiveSection('transfers')}><Send size={15} /> Transfers{state.items.length > 0 && <span>{state.items.length}</span>}</button>{clipboardVisible && <button aria-current={activeSection === 'clipboard' ? 'page' : undefined} className={activeSection === 'clipboard' ? 'active' : ''} onClick={() => setActiveSection('clipboard')}><Clipboard size={15} /> Clipboard</button>}<label className="density-picker"><span>View</span><select aria-label="Display density" disabled={!!busy || tunnelBusy || dragging} value={state.settings?.viewMode || 'expanded'} onChange={event => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label></nav>
 
       <main className="workspace">
-        {activeSection === 'transfers' ? <section className="shelf-pane" aria-label="File and text shelf">
+        {activeSection === 'transfers' || !clipboardVisible ? <section className="shelf-pane" aria-label="File and text shelf">
           <div className="shelf-heading"><div><h1>Transfers</h1><p className="shelf-subtitle">Collect here. Drop onto a machine to send.</p></div><div className="shelf-counter" title="Items on your shelf">{state.items.length}<span>on your shelf</span></div></div>
           <div className={`drop-tray ${trayDrag ? 'drag-over' : ''} ${state.items.length ? 'has-items' : ''}`} onDragEnter={(event) => { event.preventDefault(); if (event.dataTransfer.types.includes(ITEM_MIME)) return; dragDepth.current += 1; setTrayDrag(true); }} onDragLeave={(event) => { event.preventDefault(); dragDepth.current -= 1; if (dragDepth.current <= 0) setTrayDrag(false); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropTray}>
             {!state.items.length ? <div className="empty-tray">
@@ -516,9 +524,10 @@ function App() {
         <button role="menuitem" onClick={() => { const host = state.hosts.find(host => host.id === machineMenu.hostId); setMachineMenu(null); openAccess(host); }}><KeyRound size={15} /><span><strong>SSH access</strong></span></button>
         <button role="menuitem" className="danger-button" onClick={async () => { if (!removeArmed) { setRemoveArmed(true); return; } const id = machineMenu.hostId; setMachineMenu(null); await action('removeHost', id, 'Machine removed.'); }}><Trash2 size={15} /><span><strong>{removeArmed ? 'Confirm remove machine' : 'Remove machine…'}</strong></span></button>
       </div>}
-      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}><section className={`modal ${modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy} onClick={closeModal}><X size={17} /></button></div>
+      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}><section className={`modal ${modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' || modal === 'install' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
+        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on another Mac' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy || macInstallBusy} onClick={closeModal}><X size={17} /></button></div>
         {modal === 'tunnels' && <TunnelPanel key={`${tunnelEntry.hostId}-${tunnelEntry.mode}-${tunnelEntry.tab}`} bridge={bridge} host={state.hosts.find((host) => host.id === tunnelEntry.hostId)} initialMode={tunnelEntry.mode} initialTab={tunnelEntry.tab} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} onClose={closeModal} blocked={settingUpAccess || sending} />}
+        {modal === 'install' && <MacInstallPanel bridge={bridge} hosts={state.hosts} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy} />}
         {modal === 'text' && <form onSubmit={async (event) => { event.preventDefault(); const next = await addText(textDraft); if (next) setModal(null); }}><p className="modal-intro">Paste a note, a link, or something worth keeping. It will wait on your shelf.</p><textarea className="text-editor" autoFocus rows={8} placeholder="Put your words here…" value={textDraft} onChange={(event) => setTextDraft(event.target.value)} /><div className="modal-actions"><span className="keyboard-hint">⌘ / Ctrl + V also works on the shelf</span><button className="primary-button" disabled={!textDraft.trim() || !!busy}><Plus size={14} /> Add to shelf</button></div></form>}
         {modal === 'host' && <form onSubmit={saveMachine}>
           <p className="modal-intro">Use a LAN name, a Tailscale IP, or any SSH address. A successful SSH check makes it ready to receive.</p>
@@ -551,7 +560,10 @@ function App() {
         </form>}
         {modal === 'settings' && <div className="settings-content"><div className="setting-row"><div><strong>Shake to show or hide</strong><p>A quick back and forth shows the shelf. Pause briefly, then shake again to hide it. Dragging and open dialogs keep it visible.</p></div><button role="switch" aria-checked={!!state.settings?.shakeEnabled} aria-label="Shake to show or hide" className={`switch ${state.settings?.shakeEnabled ? 'on' : ''}`} onClick={() => action('updateSettings', { shakeEnabled: !state.settings?.shakeEnabled })}><span /></button></div><label className="setting-row"><div><strong>Shake sensitivity</strong><p>Choose how much movement shows or hides the shelf. More deliberate is the default.</p></div><select value={state.settings?.sensitivity || 'strong'} onChange={(event) => action('updateSettings', { sensitivity: event.target.value })}><option value="gentle">More sensitive</option><option value="normal">Balanced</option><option value="strong">More deliberate</option></select></label>
           <label className="setting-row"><div><strong>Display density</strong><p>Choose how much detail appears in each row.</p></div><select aria-label="View size" disabled={!!busy} value={state.settings?.viewMode || 'expanded'} onChange={(event) => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label>
-          <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. Automatic clipboard history is off until you enable it in Clipboard. When enabled, it saves copies locally and pauses during editing or password setup. Copies are never sent automatically.</p></div></div>
+          <div className="setting-row"><div><strong>Enable Clipboard tools</strong><p>Optional history, favourites and snippets. Off by default. Turning this off stops recording and keeps saved items; re-enable history separately when ready.</p></div><button role="switch" aria-checked={state.clipboardTools?.enabled === true} aria-label="Enable Clipboard tools" disabled={!!busy} className={`switch ${state.clipboardTools?.enabled ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { enabled: !state.clipboardTools?.enabled })}><span /></button></div>
+          <div className="setting-row"><div><strong>Show Clipboard tab</strong><p>Hide the tab to keep the workspace focused. Hiding does not pause history that you have enabled. {state.clipboardTools?.historyEnabled ? 'Automatic history is on.' : 'Automatic history is off.'}</p></div><button role="switch" aria-checked={state.clipboardTools?.showTab !== false} aria-label="Show Clipboard tab" disabled={!!busy || !state.clipboardTools?.enabled} className={`switch ${state.clipboardTools?.showTab !== false ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { showTab: state.clipboardTools?.showTab === false })}><span /></button></div>
+          {state.environment?.platform === 'darwin' && <div className="setting-row"><div><strong>Install on another Mac</strong><p>Copy this app over SSH to a saved Mac. Review the machine and install folder before sending.</p></div><button className="quiet-button" disabled={!!busy || sending || tunnelBusy || macInstallBusy} onClick={() => { setQuickHost(null); setMachineMenu(null); setModal('install'); }}><Download size={15} /> Install on another Mac</button></div>}
+          <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. Clipboard tools are optional. After enabling them in Settings, separately choose automatic history in Clipboard; enabling tools alone does not record anything. When enabled, it saves copies locally and pauses during editing or password setup. Copies are never sent automatically.</p></div></div>
           <div className="settings-note"><KeyRound size={17} /><div><strong>Ready means SSH is verified.</strong><p>Use a machine’s Access button to connect with an SSH key, set one up with a password used once, or securely save a password. SSH must already be running, and the machine’s fingerprint must be trusted. Keep Tailscale running for Tailscale routes. Drop items on a ready machine or press Send to transfer them.</p></div></div>
           {!isDemo && <div className="settings-note"><MousePointer2 size={17} /><div><strong>A keyboard shortcut, too.</strong><p>{state.environment?.shortcutAvailable === false ? `The keyboard shortcut couldn’t register on this device. Open ${productName} from the tray. Escape tucks it away.` : `Press ⌘ / Ctrl + Shift + Space to show or hide ${productName}. Escape also hides it.`}</p></div></div>}
           <div className="settings-note"><Folder size={17} /><div><strong>A fresh folder on the Desktop.</strong><p>Each transfer gets its own folder inside the machine’s destination. Your shelf keeps the original items so you can send them again.</p></div></div>

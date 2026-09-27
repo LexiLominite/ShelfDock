@@ -189,5 +189,44 @@ const fresh = async (app, mode, run) => {
       assert.equal(await countCalls(page, 'captureClipboard'), 0);
       console.log('PASS Clipboard opt-in boundary and truthful editing pause labels');
     });
+    for (const mode of ['compact', 'expanded', 'large']) {
+      const page = await app.page(mode, { clipboardToolsEnabled: false, entries: 5 });
+      try {
+        assert.equal(await page.getByRole('button', { name: 'Clipboard', exact: true }).count(), 0);
+        assert.equal(await countCalls(page, 'getClipboardHistory'), 0, 'Disabled workspace never requests saved history');
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        const enable = page.getByRole('switch', { name: 'Enable Clipboard tools', exact: true });
+        const show = page.getByRole('switch', { name: 'Show Clipboard tab', exact: true });
+        assert.equal(await enable.getAttribute('aria-checked'), 'false');
+        assert.equal(await show.isDisabled(), true);
+        await enable.click(); await page.getByRole('button', { name: 'Clipboard', exact: true }).waitFor();
+        assert.equal(await countCalls(page, 'updateClipboardPreferences'), 0, 'Enabling tools does not enable recording');
+        await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+        await openClipboard(page); await page.getByText('History off', { exact: true }).waitFor();
+        await page.getByRole('button', { name: 'Enable history…', exact: true }).click();
+        await page.getByRole('button', { name: 'Turn on clipboard history', exact: true }).click();
+        await page.keyboard.press('Escape');
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        await show.click();
+        assert.equal(await page.getByRole('button', { name: 'Clipboard', exact: true }).count(), 0);
+        assert.equal(await page.evaluate(() => window.__clips.settings.enabled), true, 'Hiding keeps explicitly enabled history');
+        await page.getByText(/Hiding does not pause history that you have enabled/).waitFor();
+        await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+        await page.getByRole('region', { name: 'File and text shelf' }).waitFor();
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        await show.click(); await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+        await openClipboard(page);
+        await page.getByRole('button', { name: 'Settings', exact: true }).click(); await enable.click();
+        assert.equal(await page.getByRole('button', { name: 'Clipboard', exact: true }).count(), 0);
+        assert.equal(await page.evaluate(() => window.__clips.settings.enabled), false);
+        assert.equal(await page.evaluate(() => window.__clips.entries.length), 5, 'Disabling keeps saved entries');
+        await enable.click(); await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
+        await openClipboard(page); await page.getByText('History off', { exact: true }).waitFor();
+        assert.equal(await countCalls(page, 'updateClipboardPreferences'), 1, 'Re-enabling tools does not restore prior recording consent');
+        assert.equal(await countCalls(page, 'captureClipboardHistory'), 0);
+        assert.deepEqual(page.errors, []);
+        console.log(`PASS Clipboard optional tools, independent hide and explicit recording consent in ${mode}`);
+      } finally { await page.close(); }
+    }
   } finally { await app.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -2,7 +2,7 @@
 
 Shake to collect. Drop onto a machine to send.
 
-The interface uses the deep teal, electric cyan, and yellow palette from lexilominite.com. See [brand colours](BRAND.md).
+Version 0.4.1 restores the original soft lavender and purple palette, with clearer secondary text, quieter shadows and visible control boundaries. It also makes Clipboard tools optional in Settings and adds a reviewed SSH installation flow between compatible Macs. See [palette and readability details](BRAND.md) and [the update notes](docs/palette.md).
 
 DropHarbor is a desktop shelf for files, folders, and text. A deliberate, fast back-and-forth cursor motion toggles the shelf beside your cursor. Shake again after a short pause to hide it. Gestures keep the shelf visible while dragging or editing; the shortcut can hide it deliberately. Hover over **Machines**, then drop a held item onto a ready destination to copy it to that machine's Desktop. Clicking a machine only selects it; it never sends anything.
 
@@ -10,7 +10,7 @@ DropHarbor is a desktop shelf for files, folders, and text. A deliberate, fast b
 
 1. Open DropHarbor and let the first SSH check finish.
 2. Shake the cursor quickly back and forth, or use **Command/Ctrl + Shift + Space**. The shortcut and menu-bar/tray icon also toggle the shelf.
-3. Drop a file, folder, or selected text into the shelf. Use **Paste from clipboard** or **Command/Ctrl + V** to add plain text, a copied screenshot/image, or copied local files. Transfer-shelf Paste captures only when requested. The separate Clipboard workspace offers encrypted, opt-in history and never sends a copied item automatically. You can also use the file picker.
+3. Drop a file, folder, or selected text into the shelf. Use **Paste from clipboard** or **Command/Ctrl + V** to add plain text, a copied screenshot/image, or copied local files. Transfer-shelf Paste captures only when requested. Optional Clipboard tools can be enabled in Settings; automatic history has its own separate opt-in and never sends a copied item automatically. You can also use the file picker.
 4. Hover over Machines. The list keeps LAN, Tailscale, and other SSH routes visible and separately labelled. You can search, filter, edit a destination, or add a machine manually.
 5. Drag an item onto a machine labelled Ready to send it. The highlighted target shows the destination. The transfer receipt confirms success or explains a failure. Held items stay available for sending to another machine.
 
@@ -18,9 +18,11 @@ Every send creates a new `Drift-<timestamp>-<random>` folder inside the chosen D
 
 ## Clipboard and Transfers
 
-The primary navigation gives **Transfers** and **Clipboard** equal prominence. Transfers retains the drag-to-machine shelf. Clipboard provides full-text search, type filters, favourites, reusable text snippets, text/image/file previews, Copy with original HTML formatting or Copy as plain text, and **Add to Transfers**. Copy never sends; adding to Transfers only stages the item. File history holds references to the originals, not backup copies.
+**Transfers** is always available. Clipboard tools start **disabled on new installations**. Use **Settings → Enable Clipboard tools** to add the Clipboard workspace beside Transfers. Enabling tools alone does not record the system clipboard. Transfers retains the drag-to-machine shelf. Clipboard provides full-text search, type filters, favourites, reusable text snippets, text/image/file previews, Copy with original HTML formatting or Copy as plain text, and **Add to Transfers**. Copy never sends; adding to Transfers only stages the item. File history holds references to the originals, not backup copies.
 
-History starts **off**. Enable it explicitly in Clipboard; Pause stops background capture. The default cap is 200 entries, 30 days, and 32 MB total, with up to 1 MB of text and 8 MB of PNG data per item. Unpinned entries expire; favourites survive expiry and Clear unpinned, but still count toward capacity. Delete favourites individually when needed. History payloads are encrypted with AES-256-GCM and a key protected by the operating system secret store. Saving history and remembered passwords require a secure secret store; Linux plaintext fallback is refused. Configuration exports exclude clipboard history and all credentials.
+**Settings → Show Clipboard tab** controls visibility independently. Hiding the tab returns to Transfers and does not pause automatic history that you previously enabled. Turning **Enable Clipboard tools** off stops recording and blocks native history actions, keeps saved items, and returns to Transfers. Re-enabling tools leaves recording off until you explicitly enable it again. Existing installations retain a valid prior automatic-history opt-in; missing or corrupt preferences never create a new opt-in. These choices stay on this device and are not included in portable configuration.
+
+History starts **off**. Enable it explicitly in Clipboard; Pause stops background capture. The default cap is 200 entries, 30 days, and 32 MB total, with up to 1 MB of text and 8 MB of PNG data per item. While tools are enabled, unpinned entries expire; favourites survive expiry and Clear unpinned, but still count toward capacity. Delete favourites individually when needed. History payloads are encrypted with AES-256-GCM and a key protected by the operating system secret store. Saving history and remembered passwords require a secure secret store; Linux plaintext fallback is refused. Configuration exports exclude Clipboard tools preferences, capture consent, clipboard history and all credentials.
 
 The app skips recognised private/transient clipboard markers and suspends automatic capture while its editors or password setup are active. Some applications and browser extensions do not mark sensitive content: pause history before copying secrets. Monitoring samples the clipboard; very rapid changes and compositor restrictions, especially Wayland, can limit capture. Source-app exclusions, direct paste into other apps, OCR, and cross-device clipboard sync are roadmap features, not part of this release. See [product design and research](PRODUCT_DESIGN.md).
 
@@ -42,11 +44,11 @@ Select shelf items and tick the target machines, then review **Send N items to M
 
 ## View modes and portable configuration
 
-The visible **View** selector and Settings provide **Compact**, **Balanced** (default), and **Expanded** views. Compact uses dense rows; Balanced keeps everyday actions visible; Expanded adds inline forwarding controls and recent transfer receipts. The app resizes to the available screen space and remembers your choice. Existing Expanded/Large preferences map to Balanced/Expanded without changing the configuration format.
+The visible **View** selector and Settings provide **Compact**, **Balanced** (default), and **Expanded** views. Compact uses dense rows; Balanced keeps everyday actions visible; Expanded gives more room and adds a per-machine Details button for recent transfers. Device details and forwarding controls stay closed until you open them. The app resizes to the available screen space and remembers your choice. Existing Expanded/Large preferences map to Balanced/Expanded without changing the configuration format.
 
 Use **Settings → Export configuration** to save a versioned `DropHarbor-config.json`, then **Import configuration** on another device. See [the example file](config/lex-drift-config.example.json). Import validates the entire file before applying it, merges endpoints instead of deleting existing machines, and preserves local authentication only for an exact address/username/port match. Imported hosts need a fresh SSH check.
 
-Exports contain machine addresses/usernames/destinations and shake/view settings. They exclude private keys, passwords, SSH key paths/aliases, clipboard contents, shelf files, and transfer history. A machine list can still reveal private network details: share only a reviewed example, and keep your own export private.
+Exports contain machine addresses/usernames/destinations and shake/view settings. They exclude private keys, passwords, SSH key paths/aliases, Clipboard tools preferences and capture consent, clipboard contents, shelf files, and transfer history. A machine list can still reveal private network details: share only a reviewed example, and keep your own export private.
 
 The **clean edition** contains no personal preset. The separate **personal edition** preloads its bundled machine routes once on first launch, while keeping credentials on the device. Both repositories are private during testing. The clean repository can be made public independently after release checks; keep the personal repository and its builds private.
 
@@ -58,10 +60,20 @@ The app checks actual SSH command access, not only Tailscale online status. Read
 
 Imported SSH aliases retain their configured connection behavior. Manual machines need an address, SSH username, port, and optionally a local private-key path. Keys remain in your existing SSH folder; DropHarbor stores only their paths. Use the same SSH login that already works in your terminal. For a new server, connect in your terminal and verify its fingerprint before checking it in DropHarbor. The app never disables host-key checking.
 
+## Install the app on another Mac
+
+The **Install on another Mac** flow is available from an installed, packaged macOS app. Choose an existing saved SSH machine and select **Check Mac** to review its account, address, processor, version and destination. The destination must be macOS with the same architecture as the sending app; the current Mac release is Apple Silicon. This flow does not create arbitrary hosts or install Windows/Linux packages. Normal transfers remain available across supported desktop platforms.
+
+Confirm the reviewed plan to send only this app bundle to the destination account's `~/Applications` folder. The preview expires after five minutes and can be used once. SSH trust and credentials come from the existing saved route; no new password or host-key bypass is introduced. A personal edition requires a separate acknowledgement that its bundled machine preset will be included. Local clipboard history, shelf data, passwords, private keys and the sender's application profile are not copied.
+
+The installer rechecks the saved endpoint, app bundle and destination, verifies the uploaded archive's SHA-256 and app identity/version, and refuses to replace an existing destination app. It preserves bundle metadata, reports progress and any staging cleanup that still needs attention, and leaves the installed app closed. Open it yourself on the receiving Mac when ready; existing OS security prompts still apply. This is a first-install convenience, not an automatic updater or a way to enable Remote Login. Existing installations should be updated manually.
+
+The flow has no completed live remote-install validation yet. Native macOS-to-macOS installation remains a release-test requirement; packaged Windows/Linux sender and receiver validation remains separate.
+
 ## What each device needs
 
 - **Sender:** the DropHarbor desktop app and the OpenSSH client (`ssh` and `scp`). Tailscale is needed only for Tailscale destinations.
-- **Receiver:** an SSH server with file-transfer support, a working noninteractive key/agent login, and permission to write to the selected Desktop folder. The receiver does not need DropHarbor or Wave installed. Linux/macOS use the traditional SCP protocol; Windows uses SFTP.
+- **Receiver:** an SSH server with file-transfer support, trusted key/agent access or a configured password route, and permission to write to the selected Desktop folder. The receiver does not need DropHarbor or Wave installed. Linux/macOS use the traditional SCP protocol; Windows uses SFTP.
 - **macOS:** allow Desktop/file access if macOS asks. A receiving Mac needs Remote Login enabled for the intended account. Remote Login/file access permissions must be approved by the machine's owner.
 - **Windows:** install the OpenSSH Client for sending and OpenSSH Server for receiving. Sending to a native Windows destination requires OpenSSH 9 or newer on the sender. For a manual Windows server choose Windows as its operating system. Set its proper login username and trust the host in SSH first. Windows destination support uses the OS Desktop path, including OneDrive redirection, but has not yet been tested on a live Windows server.
 - **Linux:** sending requires a graphical desktop. Headless machines, including Spark, can receive using their SSH server.
@@ -125,7 +137,7 @@ Clear shelf offers a 10-second Undo, restoring the exact cleared items alongside
 
 ## Port forwarding
 
-Choose the globe on a machine and enter a URL such as `http://localhost:1331`, then choose **Go**. A saved website reopens with one click on that globe. **Advanced** reveals Local/Remote direction and destination/listening ports; Expanded view keeps those controls visible. Local listens on this device and reaches the URL through the SSH machine. Remote listens on the SSH machine and reaches the destination through this device. Local live websites can open in your browser; Remote forwards do not open as local sites. A live chip on the machine stops that connection. Right-click or the three-dot menu retains advanced setup, history, access, editing and removal.
+Choose the globe on a machine and enter a URL such as `http://localhost:1331`, then choose **Go**. A saved website reopens with one click on that globe. **Advanced** reveals Local/Remote direction and destination/listening ports; Advanced stays closed by default in every view, including Expanded. Local listens on this device and reaches the URL through the SSH machine. Remote listens on the SSH machine and reaches the destination through this device. Local live websites can open in your browser; Remote forwards do not open as local sites. A live chip on the machine stops that connection. Right-click or the three-dot menu retains advanced setup, history, access, editing and removal.
 
 Go reports Forwarding or Live inline. Connections shows starting/running/failed status, the owned OpenSSH process ID where applicable, and Stop. Save a plan to History to repeat it later; each saved plan can have a note. Plans never restart automatically. Website scheme and pathname are remembered locally for saved plans; query strings and fragments are not persisted. These website preferences are currently excluded from configuration exports. HTTPS sites still need certificates and routing that work at the forwarded local address. Editing a machine's endpoint invalidates an old plan until you review a new one. Quitting closes the app's own tunnels.
 

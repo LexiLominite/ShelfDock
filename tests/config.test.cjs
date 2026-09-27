@@ -25,7 +25,7 @@ test('portable export includes configured endpoints and view preferences without
   const config = createConfig({
     hosts: [machine({ id: 'local-id', identityFile: '/private/key', sshAlias: 'LocalAlias', password: 'private-password', source: 'SSH', status: 'ready' }), machine({ address: '100.64.0.50', user: '', name: 'Unconfigured peer' })],
     settings: { shakeEnabled: false, sensitivity: 'strong', viewMode: 'large', clipboardWatch: true, sendImmediately: true },
-    items: [{ path: '/private/note', preview: 'private text' }], history: [{ destination: '/private/receipt' }], clipboard: 'clipboard secret'
+    items: [{ path: '/private/note', preview: 'private text' }], history: [{ destination: '/private/receipt' }], clipboard: 'clipboard secret', clipboardTools: { enabled: true, showTab: true, historyConsent: true }
   });
   assert.deepEqual(config.hosts, [machine()]);
   assert.deepEqual(config.settings, { shakeEnabled: false, sensitivity: 'strong', viewMode: 'large' });
