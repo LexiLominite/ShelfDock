@@ -98,7 +98,21 @@ async function controller(options = {}) {
     './received.cjs': { ReceivedManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('receivedCreated', args.enabled); } async getState() { return { received: [], unreadCount: 0 }; } async refresh() { record('receivedRefresh'); return this.getState(); } async markRead(value) { record('receivedRead', value); return this.getState(); } async openFolder(value) { record('receivedOpen', value); return this.getState(); } async addToShelf(value) { record('receivedShelf', value); return initialState; } start() { record('receivedStart'); } stop() { record('receivedStop'); } } },
     './updates.cjs': { UpdateManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('updatesCreated', args.enabled); } snapshot() { return { status: 'idle', version: '0.5.0' }; } async getState() { return this.snapshot(); } async check() { record('updatesCheck'); return this.getState(); } async install() { if (this.args.isBusy()) throw new Error('Finish active work first.'); this.args.onChange({status:'installing'}); record('updatesInstall'); } start() { record('updatesStart'); } shutdown() { record('updatesShutdown'); } } },
     './tunnel-site.cjs': { ...require('../desktop/tunnel-site.cjs'), verifyTunnelSite: async (url, recordValue) => { record('verifyTunnelSite', url); if (options.siteProbe) await options.siteProbe(url, recordValue); if (options.siteProbeError) throw new Error(options.siteProbeError); } },
-    './clipboard-history.cjs': { ClipboardHistory: class {
+    './clipboard-sync.cjs': { ClipboardSync: class {
+      constructor() { record('clipboardSyncCreated'); this.ready = Promise.resolve(); }
+      state() { return { available: false, enabled: false, paused: false, receiveMode: 'history', pairing: null, peers: [] }; }
+      async setEnabled(enabled) { record('clipboardSyncEnabled', enabled); }
+      async setPaused() {}
+      async setReceiveMode() {}
+      async beginPairing() { return { code: 'ABCDEFGH', expiresAt: new Date().toISOString() }; }
+      async pairWith() { return this.state(); }
+      async updatePeer() {}
+      async revoke() { return this.state(); }
+      async submitLocal() {}
+      async shutdown() { record('clipboardSyncShutdown'); }
+    } },
+    './clipboard-sync-ssh.cjs': { connectSsh() { throw new Error('No SSH in controller tests.'); }, buildSshArgs() { return []; } },
+    './clipboard-history.cjs': { SYNC_EVENT_TYPE: 'application/x-shelfdock-sync-event', ClipboardHistory: class {
       constructor(args) { historyOptions = args; this.initialized = Promise.resolve(); this.tools = { enabled: options.clipboardToolsEnabled === true, showTab: true, historyEnabled: false }; }
       toolsState() { return { ...this.tools }; }
       requireTools() { if (!this.tools.enabled) throw new Error('Enable Clipboard tools in Settings first.'); }

@@ -27,6 +27,85 @@ const routeLabel = (route) => route === 'tailscale' ? 'Tailscale' : route === 'l
 const statusLabel = (status) => ({ ready: 'Ready', 'auth-required': 'Needs access', offline: 'Offline', checking: 'Checking', unknown: 'Unchecked' })[status] || 'Unchecked';
 const hostIcon = (host) => /spark|server/i.test(host.name) ? Server : /book|laptop/i.test(host.name) ? Laptop : Monitor;
 const orderHosts = (hosts) => { const rank = { ready: 0, checking: 1, unknown: 2, 'auth-required': 3, offline: 4 }; return [...hosts].sort((a, b) => (rank[a.status] ?? 2) - (rank[b.status] ?? 2)); };
+const syncDirections = [['send', 'Send only'], ['receive', 'Receive only'], ['both', 'Both directions']];
+const hostOptionLabel = (host) => (typeof host?.name === 'string' && host.name.trim()) || (typeof host?.label === 'string' && host.label.trim()) || 'Computer';
+const peerOptionLabel = (peer) => (typeof peer?.label === 'string' && peer.label.trim()) || (typeof peer?.name === 'string' && peer.name.trim()) || 'Paired computer';
+const peerDirection = (value) => (value === 'send' || value === 'receive' || value === 'both' ? value : 'both');
+// Older snapshots omit clipboardSync. Treat that as sync off and no peers.
+const clipboardSyncState = (state) => (state?.clipboardSync && typeof state.clipboardSync === 'object' ? state.clipboardSync : {});
+const pairingDetails = (pairing) => {
+  if (!pairing) return null;
+  if (typeof pairing === 'string') { const code = pairing.trim(); return code ? { code, expiresAt: null } : null; }
+  if (typeof pairing !== 'object') return null;
+  const code = typeof pairing.code === 'string' ? pairing.code.trim() : '';
+  const expiresAt = pairing.expiresAt ?? null;
+  if (!code && (expiresAt == null || expiresAt === '')) return null;
+  return { code, expiresAt };
+};
+const expiryLabel = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+function ClipboardSyncSettings({ state, busy, action }) {
+  const toolsOn = state.clipboardTools?.enabled === true;
+  const sync = clipboardSyncState(state);
+  const enabled = sync.enabled === true;
+  const paused = sync.paused === true;
+  const requestedReceive = sync.receiveMode ?? sync.receive;
+  const receiveMode = requestedReceive === 'clipboard' ? 'clipboard' : 'history';
+  const hosts = Array.isArray(state?.hosts) ? state.hosts.filter((host) => host && host.id != null && host.id !== '') : [];
+  const peers = Array.isArray(sync.peers) ? sync.peers.filter((peer) => peer && peer.id != null && peer.id !== '') : [];
+  const pairing = pairingDetails(sync.pairing);
+  const error = typeof sync.error === 'string' ? sync.error.trim() : '';
+  const locked = !toolsOn || !!busy;
+  const [hostId, setHostId] = useState('');
+  const [code, setCode] = useState('');
+  const [direction, setDirection] = useState('both');
+  const selectedHostId = hosts.some((host) => host.id === hostId) ? hostId : '';
+  const expiryDate = pairing?.expiresAt == null || pairing.expiresAt === '' ? null : new Date(pairing.expiresAt);
+  const expiryValid = expiryDate && !Number.isNaN(expiryDate.getTime());
+  const pair = () => { if (locked || !selectedHostId || !code.trim()) return; void action('pairClipboardSync', { hostId: selectedHostId, code: code.trim(), direction }); };
+
+  return <div className="clipboard-sync-settings">
+    <div className="setting-row">
+      <div>
+        <strong>Sync between devices</strong>
+        <p>Pair ShelfDock on another computer. Copying can send text, links, and images to the devices you approve. Files stay on the transfer shelf.</p>
+        {!toolsOn && <p>Turn on Clipboard tools before pairing computers.</p>}
+      </div>
+      <button type="button" role="switch" aria-checked={enabled} aria-label="Sync between devices" disabled={locked} className={`switch ${enabled ? 'on' : ''}`} onClick={() => action('updateClipboardSync', { enabled: !enabled })}><span /></button>
+    </div>
+    {error && <p className="clipboard-sync-error" role="alert">{error}</p>}
+    <fieldset className="clipboard-sync-receive">
+      <legend>Receive preference</legend>
+      <label className="clipboard-sync-choice"><input type="radio" name="clipboard-sync-receive" value="history" checked={receiveMode === 'history'} disabled={locked} onChange={() => action('updateClipboardSync', { receiveMode: 'history' })} /><span>Save to clipboard history</span></label>
+      <label className="clipboard-sync-choice"><input type="radio" name="clipboard-sync-receive" value="clipboard" checked={receiveMode === 'clipboard'} disabled={locked} onChange={() => action('updateClipboardSync', { receiveMode: 'clipboard' })} /><span>Also place on the system clipboard</span></label>
+      <p>Saving to clipboard history does not change what is currently copied.</p>
+    </fieldset>
+    {enabled && <div className="clipboard-sync-actions"><button type="button" className="quiet-button" aria-label={paused ? 'Resume clipboard sync' : 'Pause clipboard sync'} disabled={locked} onClick={() => action('updateClipboardSync', { paused: !paused })}>{paused ? 'Resume' : 'Pause'}</button></div>}
+    <div className="clipboard-sync-actions"><button type="button" className="quiet-button" disabled={locked} onClick={() => action('beginClipboardPairing')}>Allow pairing</button></div>
+    {pairing && <div className="clipboard-sync-pairing">
+      {pairing.code && <p className="clipboard-sync-code" aria-label="Pairing code">{pairing.code}</p>}
+      {pairing.expiresAt != null && pairing.expiresAt !== '' && <p className="clipboard-sync-expiry">Expires {expiryValid ? <time dateTime={expiryDate.toISOString()}>{expiryLabel(pairing.expiresAt)}</time> : expiryLabel(pairing.expiresAt)}</p>}
+    </div>}
+    <label className="clipboard-sync-field"><span aria-hidden="true">Machine</span><select aria-label="Machine" value={selectedHostId} disabled={locked} onChange={(event) => setHostId(event.target.value)}><option value="">Choose a machine</option>{hosts.map((host) => <option value={host.id} key={host.id}>{hostOptionLabel(host)}</option>)}</select></label>
+    <label className="clipboard-sync-field"><span aria-hidden="true">Pairing code</span><input aria-label="Pairing code from the other computer" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} value={code} disabled={locked} onChange={(event) => setCode(event.target.value)} /></label>
+    <label className="clipboard-sync-field"><span aria-hidden="true">Direction</span><select aria-label="Direction" value={direction} disabled={locked} onChange={(event) => setDirection(event.target.value)}>{syncDirections.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+    <div className="clipboard-sync-actions"><button type="button" className="quiet-button" disabled={locked || !selectedHostId || !code.trim()} onClick={pair}>Pair this computer</button></div>
+    {peers.length > 0 && <ul className="clipboard-sync-peers">{peers.map((peer) => {
+      const label = peerOptionLabel(peer);
+      const peerPaused = peer.paused === true;
+      return <li className="clipboard-sync-peer" key={peer.id}>
+        <div className="clipboard-sync-peer-head"><strong>{label}</strong><button type="button" className="danger-button" disabled={locked} onClick={() => action('revokeClipboardPeer', { id: peer.id })}>Revoke</button></div>
+        <div className="clipboard-sync-field"><span aria-hidden="true">Direction</span><select aria-label={`Direction for ${label}`} value={peerDirection(peer.direction)} disabled={locked} onChange={(event) => action('updateClipboardPeer', { id: peer.id, direction: event.target.value })}>{syncDirections.map(([value, name]) => <option value={value} key={value}>{name}</option>)}</select></div>
+        <button type="button" className="quiet-button" aria-label={peerPaused ? `Resume sync with ${label}` : `Pause sync with ${label}`} disabled={locked} onClick={() => action('updateClipboardPeer', { id: peer.id, paused: !peerPaused })}>{peerPaused ? 'Resume' : 'Pause'}</button>
+      </li>;
+    })}</ul>}
+    {peers.length > 0 && <p className="clipboard-sync-revoke-note">Revoke stops that computer immediately. Clipboard history on this device stays here.</p>}
+  </div>;
+}
 
 function App() {
   const bridge = window.drift;
@@ -278,6 +357,12 @@ function App() {
     if (method === 'removeHost') next.hosts = next.hosts.filter((host) => host.id !== value);
     if (method === 'updateClipboardTools') { next.clipboardTools = { ...next.clipboardTools, ...value }; if (!next.clipboardTools.enabled) next.clipboardTools.historyEnabled = false; }
     if (method === 'updateSettings') next.settings = { ...next.settings, ...value };
+    const ensureSync = () => { if (!next.clipboardSync || typeof next.clipboardSync !== 'object') next.clipboardSync = { enabled: false, paused: false, receiveMode: 'history', peers: [] }; if (!Array.isArray(next.clipboardSync.peers)) next.clipboardSync.peers = []; return next.clipboardSync; };
+    if (method === 'updateClipboardSync' && value && typeof value === 'object') Object.assign(ensureSync(), value);
+    if (method === 'beginClipboardPairing') ensureSync().pairing = { code: 'PREVIEW', expiresAt: new Date(Date.now() + 300000).toISOString() };
+    if (method === 'pairClipboardSync' && value && typeof value === 'object') { const sync = ensureSync(); const host = next.hosts.find((item) => item.id === value.hostId); sync.peers.push({ id: uid(), hostId: value.hostId, label: host?.name || host?.label || 'Computer', direction: peerDirection(value.direction), paused: false }); sync.pairing = null; }
+    if (method === 'updateClipboardPeer' && value?.id) { const sync = ensureSync(); sync.peers = sync.peers.map((peer) => peer.id === value.id ? { ...peer, ...value } : peer); }
+    if (method === 'revokeClipboardPeer' && value?.id) { const sync = ensureSync(); sync.peers = sync.peers.filter((peer) => peer.id !== value.id); }
     if (method === 'send' || method === 'sendMany') {
       for (const hostId of value.hostIds || [value.hostId]) next.history.unshift({ id: uid(), hostName: next.hosts.find((host) => host.id === hostId)?.name || 'Machine', itemCount: value.itemIds.length, status: 'failed', message: 'Demo preview: no files were transferred. Open the desktop application to send.', timestamp: new Date().toISOString() });
       noticeNow('Demo preview only. No files were transferred.', 'info');
@@ -628,6 +713,7 @@ function App() {
           <label className="setting-row"><div><strong>Display density</strong><p>Choose how much detail appears in each row.</p></div><select aria-label="View size" disabled={!!busy} value={state.settings?.viewMode || 'expanded'} onChange={(event) => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label>
           <div className="setting-row"><div><strong>Enable Clipboard tools</strong><p>Optional history, favourites and snippets. Off by default. Turning this off stops recording and keeps saved items; re-enable history separately when ready.</p></div><button role="switch" aria-checked={state.clipboardTools?.enabled === true} aria-label="Enable Clipboard tools" disabled={!!busy} className={`switch ${state.clipboardTools?.enabled ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { enabled: !state.clipboardTools?.enabled })}><span /></button></div>
           <div className="setting-row"><div><strong>Show Clipboard tab</strong><p>Hide the tab to keep the workspace focused. Hiding does not pause history that you have enabled. {state.clipboardTools?.historyEnabled ? 'Automatic history is on.' : 'Automatic history is off.'}</p></div><button role="switch" aria-checked={state.clipboardTools?.showTab !== false} aria-label="Show Clipboard tab" disabled={!!busy || !state.clipboardTools?.enabled} className={`switch ${state.clipboardTools?.showTab !== false ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { showTab: state.clipboardTools?.showTab === false })}><span /></button></div>
+          <ClipboardSyncSettings state={state} busy={busy} action={action} />
           <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. Clipboard tools are optional. After enabling them in Settings, separately choose automatic history in Clipboard; enabling tools alone does not record anything. When enabled, it saves copies locally and pauses during editing or password setup. Copies are never sent automatically.</p></div></div>
           <div className="settings-note"><KeyRound size={17} /><div><strong>Ready means SSH is verified.</strong><p>Use a machine’s Access button to connect with an SSH key, set one up with a password used once, or securely save a password. SSH must already be running, and the machine’s fingerprint must be trusted. Keep Tailscale running for Tailscale routes. Drop items on a ready machine or press Send to transfer them.</p></div></div>
           {!isDemo && <div className="settings-note"><MousePointer2 size={17} /><div><strong>A keyboard shortcut, too.</strong><p>{state.environment?.shortcutAvailable === false ? `The keyboard shortcut couldn’t register on this device. Open ${productName} from the tray. Escape tucks it away.` : `Press ⌘ / Ctrl + Shift + Space to show or hide ${productName}. Escape also hides it.`}</p></div></div>}

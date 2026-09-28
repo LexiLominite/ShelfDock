@@ -10,6 +10,8 @@ const { createConfig, importConfiguration } = require('./config.cjs');
 const { migrateLegacyData } = require('./migrate.cjs');
 const { acquireWorker } = require('./worker.cjs');
 const { ClipboardHistory } = require('./clipboard-history.cjs');
+const { ClipboardSync } = require('./clipboard-sync.cjs');
+const { connectSsh } = require('./clipboard-sync-ssh.cjs');
 const { TunnelManager } = require('./tunnels.cjs');
 const { MacInstaller } = require('./mac-installer.cjs');
 const { ReceivedManager } = require('./received.cjs');
@@ -24,7 +26,33 @@ const backgroundTest = process.env.LEX_DRIFT_BACKGROUND_TEST === '1';
 const startHidden = backgroundTest || process.argv.includes('--background');
 const singleton = app.requestSingleInstanceLock({ background: startHidden });
 if (!singleton) app.quit();
-let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, tunnels, macInstaller, received, updates, worker, quitting = false, closingWorker = false;
+let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, clipboardSync, tunnels, macInstaller, received, updates, worker, quitting = false, closingWorker = false;
+const PAIR_CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+const PAIR_DIRECTIONS = new Set(['send', 'receive', 'both']);
+const SSH_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+function emptyClipboardSync() { return { available: false, enabled: false, paused: false, receiveMode: 'history', pairing: null, peers: [] }; }
+function publicClipboardSync() {
+  try { return clipboardSync?.state() || emptyClipboardSync(); } catch { return emptyClipboardSync(); }
+}
+function sshTargetFor(host) {
+  const identityFile = typeof host.identityFile === 'string' ? host.identityFile : '';
+  if (host.sshAlias && SSH_NAME.test(host.sshAlias)) return { alias: host.sshAlias, identityFile };
+  if (!host.user || !SSH_NAME.test(host.user) || !host.address || !SSH_NAME.test(host.address)) throw new Error('That machine needs an SSH login before it can pair.');
+  return { user: host.user, host: host.address, port: host.port, identityFile };
+}
+async function deliverSyncedClipboard(item) {
+  if (!clipboardHistory || !clipboardSync || !item) return;
+  const content = item.kind === 'png' ? { kind: 'image', png: item.png } : { kind: 'text', text: item.text };
+  const hash = clipboardHistory.contentHash(content);
+  clipboardHistory.noteSyncEvent(item.eventId, hash);
+  if (clipboardSync.state().receiveMode === 'clipboard') {
+    if (item.kind === 'png') clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(item.png, 'base64')));
+    else if (typeof item.text === 'string') clipboard.writeText(item.text);
+    clipboardHistory.acknowledgeSyncWrite(hash);
+  }
+  if (clipboardHistory.historyEnabled()) await clipboardHistory.ingestSync({ eventId: item.eventId, kind: item.kind, text: item.text, png: item.png, sourceLabel: item.originLabel });
+  else if (clipboardSync.state().receiveMode === 'history') clipboardSync.noteError('Turn on clipboard history to keep incoming items, or choose the system clipboard.');
+}
 let interaction = { dragging: false, editing: false };
 let runtimeSettings = { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' };
 const detector = new ShakeDetector();
@@ -35,7 +63,7 @@ const entryURL = pathToFileURL(entry).href;
 function decorate(state) {
   const warnings = [nativeStatus.migrationWarning, nativeStatus.presetWarning].filter(Boolean);
   const updateState = updates?.snapshot();
-  return { ...state, updatesSummary: updateState ? { status: updateState.status, availableVersion: updateState.release?.version, downloadedVersion: updateState.downloaded?.version } : null, clipboardTools: clipboardHistory?.toolsState?.() || { enabled: false, showTab: true, historyEnabled: false }, discovery: { ...state.discovery, warnings: [...(state.discovery?.warnings || []), ...warnings] }, environment: { ...state.environment, ...nativeStatus } };
+  return { ...state, clipboardSync: publicClipboardSync(), updatesSummary: updateState ? { status: updateState.status, availableVersion: updateState.release?.version, downloadedVersion: updateState.downloaded?.version } : null, clipboardTools: clipboardHistory?.toolsState?.() || { enabled: false, showTab: true, historyEnabled: false }, discovery: { ...state.discovery, warnings: [...(state.discovery?.warnings || []), ...warnings] }, environment: { ...state.environment, ...nativeStatus } };
 }
 function publish(state) {
   if (runtimeSettings.sensitivity !== state.settings.sensitivity) detector.setSensitivity(state.settings.sensitivity);
@@ -107,8 +135,13 @@ if (singleton) app.whenReady().then(async () => {
     try { await migrateLegacyData({ target: app.getPath('userData'), legacy: path.join(app.getPath('appData'), 'Drift') }); }
     catch (error) { nativeStatus.migrationWarning = error.message; console.warn(error.message); }
   }
-  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || !!service?.appUpdating || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); if (service?.state) publish(service.state); } });
+  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || !!service?.appUpdating || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, onLocalItem: payload => clipboardSync?.submitLocal(payload).catch(() => {}), onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); if (service?.state) publish(service.state); } });
   await clipboardHistory.initialized;
+  if (!backgroundTest) {
+    clipboardSync = new ClipboardSync({ dataDir: app.getPath('userData'), safeStorage, connect: peer => connectSsh(peer.sshTarget), onChange: () => { if (service?.state) publish(service.state); }, onItem: item => { deliverSyncedClipboard(item).catch(() => {}); } });
+    await clipboardSync.ready;
+    if (!clipboardHistory.tools.enabled && clipboardSync.state().enabled) await clipboardSync.setEnabled(false);
+  }
   service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish, safeStorage });
   await service.getState();
   if (app.isPackaged && ['LexBridge', 'lex-drift'].includes(productName)) {
@@ -161,7 +194,46 @@ if (singleton) app.whenReady().then(async () => {
   }
   for (const [method, operation] of Object.entries({ getReceived: () => received.getState(), refreshReceived: () => received.refresh(), markReceivedRead: request => received.markRead(request), openReceivedFolder: request => received.openFolder(request), addReceivedToShelf: async request => decorate(await received.addToShelf(request)) })) safeHandler(method, operation);
   for (const [method, operation] of Object.entries({ getUpdates: () => updates.getState(), checkForUpdates: () => updates.check(), updateUpdatePreferences: patch => updates.updatePreferences(patch), downloadUpdate: () => updates.download(), cancelUpdate: () => updates.cancel(), installUpdate: () => updates.install(), openUpdateRelease: () => updates.openRelease(), revealUpdateDownload: () => updates.revealDownload() })) safeHandler(method, operation);
-  safeHandler('updateClipboardTools', async patch => { await clipboardHistory.updateTools(patch); return decorate(await service.getState()); });
+  safeHandler('updateClipboardTools', async patch => {
+    await clipboardHistory.updateTools(patch);
+    if (patch?.enabled === false && clipboardSync) await clipboardSync.setEnabled(false);
+    return decorate(await service.getState());
+  });
+  safeHandler('updateClipboardSync', async patch => {
+    if (!clipboardHistory.tools?.enabled) throw new Error('Enable Clipboard tools in Settings first.');
+    if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
+    if (typeof patch?.enabled === 'boolean') await clipboardSync.setEnabled(patch.enabled);
+    if (typeof patch?.paused === 'boolean') await clipboardSync.setPaused(patch.paused);
+    if (patch?.receiveMode) await clipboardSync.setReceiveMode(patch.receiveMode);
+    return decorate(await service.getState());
+  });
+  safeHandler('beginClipboardPairing', async () => {
+    if (!clipboardHistory.tools?.enabled) throw new Error('Enable Clipboard tools in Settings first.');
+    if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
+    await clipboardSync.beginPairing();
+    return decorate(await service.getState());
+  });
+  safeHandler('pairClipboardSync', async request => {
+    if (!clipboardHistory.tools?.enabled) throw new Error('Enable Clipboard tools in Settings first.');
+    if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
+    const host = (await service.getState()).hosts.find(item => item.id === request?.hostId);
+    if (!host) throw new Error('Choose a saved machine.');
+    const code = String(request?.code || '').trim().toUpperCase();
+    if (!PAIR_CODE.test(code)) throw new Error('Enter the 8-character pairing code from the other computer.');
+    const direction = PAIR_DIRECTIONS.has(request?.direction) ? request.direction : 'both';
+    await clipboardSync.pairWith({ hostLabel: host.name, code, direction, sshTarget: sshTargetFor(host) });
+    return decorate(await service.getState());
+  });
+  safeHandler('updateClipboardPeer', async request => {
+    if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
+    await clipboardSync.updatePeer({ id: request?.id, direction: request?.direction, paused: request?.paused });
+    return decorate(await service.getState());
+  });
+  safeHandler('revokeClipboardPeer', async request => {
+    if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
+    await clipboardSync.revoke(request?.id);
+    return decorate(await service.getState());
+  });
   for (const [method, operation] of Object.entries({ getClipboardHistory: options => clipboardHistory.getState(options), updateClipboardPreferences: patch => clipboardHistory.updatePreferences(patch), captureClipboardHistory: () => clipboardHistory.capture(), getClipboardEntry: id => clipboardHistory.detail(id), copyClipboardEntry: request => clipboardHistory.copy(request), setClipboardPinned: request => clipboardHistory.setPinned(request), removeClipboardEntry: id => clipboardHistory.remove(id), clearClipboardHistory: () => clipboardHistory.clearUnpinned(), saveClipboardSnippet: request => clipboardHistory.saveSnippet(request), addClipboardEntryToShelf: async id => decorate(await clipboardHistory.addToShelf(id, service)) })) safeHandler(method, (...args) => { if (method !== 'getClipboardHistory') clipboardHistory.requireTools(); return operation(...args); });
   for (const [method, operation] of Object.entries({ getTunnels: () => tunnels.getState(), startTunnel: request => tunnels.start(request), stopTunnel: id => tunnels.stop(id), restartTunnel: id => tunnels.restart(id), removeTunnelHistory: id => tunnels.removeHistory(id), updateTunnelNote: request => tunnels.updateNote(request) })) safeHandler(method, operation);
   for (const [method, operation] of Object.entries({ getMacInstallState: () => macInstaller.getState(), previewMacInstall: request => macInstaller.preview(request), installOnMac: request => macInstaller.install(request) })) safeHandler(method, operation);
@@ -269,7 +341,7 @@ app.on('before-quit', event => {
   quitting = true; clearInterval(poll); clearInterval(refreshTimer); clearInterval(clipboardTimer); received?.stop(); updates?.shutdown();
   if (worker?.primary && !closingWorker) {
     event.preventDefault(); closingWorker = true;
-    Promise.resolve(macInstaller?.shutdown()).catch(console.error).then(() => Promise.all([service?.shelfMutation?.catch(() => {}), clipboardHistory?.queue, service?.writeChain, received?.operations?.catch(() => {})])).catch(console.error).then(() => tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
+    Promise.resolve(clipboardSync?.shutdown()).catch(console.error).then(() => macInstaller?.shutdown()).catch(console.error).then(() => Promise.all([service?.shelfMutation?.catch(() => {}), clipboardHistory?.queue, clipboardHistory?.localSubmissions, service?.writeChain, received?.operations?.catch(() => {})])).catch(console.error).then(() => tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
   }
 });
 app.on('will-quit', () => { globalShortcut.unregisterAll(); worker?.close().catch(console.error); });

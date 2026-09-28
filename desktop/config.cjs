@@ -74,7 +74,11 @@ function createConfig(state) {
   const hosts = (state.hosts || []).filter(host => typeof host.user === 'string' && host.user.trim()).filter(host => {
     const key = endpoint(host); if (seen.has(key)) return false; seen.add(key); return true;
   }).map(host => Object.fromEntries(HOST_FIELDS.map(key => [key, host[key]])));
-  const settings = Object.fromEntries(Object.keys(SETTINGS_DEFAULTS).map(key => [key, state.settings?.[key] ?? SETTINGS_DEFAULTS[key]]));
+  // Portable setup never includes clipboard-sync pairings, tokens, or that directory.
+  const settingsSource = { ...(state.settings || {}) };
+  delete settingsSource.clipboardSync;
+  delete settingsSource.token;
+  const settings = Object.fromEntries(Object.keys(SETTINGS_DEFAULTS).map(key => [key, settingsSource[key] ?? SETTINGS_DEFAULTS[key]]));
   return validateConfig({ schema: SCHEMA, version: VERSION, hosts, settings });
 }
 
