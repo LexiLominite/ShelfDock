@@ -26,13 +26,15 @@ function settingsFor(patch, base = DEFAULTS) {
 const SYNC_EVENT_TYPE = 'application/x-shelfdock-sync-event';
 function syncKindFor(text) { return classifyText(text).kind; }
 class ClipboardHistory {
-  constructor({ dataDir, clipboard, ClipboardItem, safeStorage, platform = process.platform, onChange = () => {}, onLocalItem = () => {}, isBlocked = () => false, now = Date.now }) {
+  constructor({ dataDir, clipboard, ClipboardItem, safeStorage, platform = process.platform, onChange = () => {}, onLocalItem = () => {}, isSyncEnabled = () => false, isBlocked = () => false, now = Date.now }) {
     this.dir = path.join(dataDir, 'clipboard-history'); this.clipboard = clipboard; this.ClipboardItem = ClipboardItem; this.safeStorage = safeStorage; this.platform = platform;
-    this.tools = { ...TOOLS_DEFAULTS }; this.disablingTools = false; this.onChange = onChange; this.onLocalItem = onLocalItem; this.isBlocked = isBlocked; this.now = now; this.settings = { ...DEFAULTS }; this.entries = []; this.queue = Promise.resolve(); this.localSubmissions = Promise.resolve(); this.epoch = 0; this.lastHash = ''; this.syncEventIds = new Set(); this.syncSuppressHash = ''; this.syncSuppressUntil = 0; this.busy = false; this.error = ''; this.initialized = this.load();
+    this.tools = { ...TOOLS_DEFAULTS }; this.disablingTools = false; this.onChange = onChange; this.onLocalItem = onLocalItem; this.isSyncEnabled = isSyncEnabled; this.syncBaselinePending = false; this.isBlocked = isBlocked; this.now = now; this.settings = { ...DEFAULTS }; this.entries = []; this.queue = Promise.resolve(); this.localSubmissions = Promise.resolve(); this.epoch = 0; this.lastHash = ''; this.syncEventIds = new Set(); this.syncSuppressHash = ''; this.syncSuppressUntil = 0; this.busy = false; this.error = ''; this.initialized = this.load();
   }
   available() { try { return !!this.safeStorage?.isEncryptionAvailable() && (this.platform !== 'linux' || ['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(this.safeStorage.getSelectedStorageBackend?.())); } catch { return false; } }
   toolsState() { return { enabled: this.tools.enabled && !this.disablingTools, showTab: this.tools.showTab, historyEnabled: this.historyEnabled() }; }
   historyEnabled() { return this.tools.enabled && !this.disablingTools && this.tools.historyConsent && this.settings.enabled; }
+  syncActive() { try { return this.tools.enabled && !this.disablingTools && this.isSyncEnabled() === true; } catch { return false; } }
+  resetSyncBaseline() { this.syncBaselinePending = true; }
   requireTools() { if (!this.tools.enabled || this.disablingTools) throw new Error('Enable Clipboard tools in Settings first.'); }
   async saveTools(settings) { await fs.mkdir(this.dir, { recursive: true, mode: 0o700 }); await this.atomic('tools-configured-v1', '1'); await this.atomic('tools.json', JSON.stringify({ ...settings, version: 2 })); this.tools = settings; }
   async load() {
@@ -189,11 +191,21 @@ class ClipboardHistory {
     return { eventId, kind: syncKindFor(content.text), text: content.text, createdAt };
   }
   emitLocal(payload) {
-    try { this.localSubmissions = Promise.resolve(this.onLocalItem?.(payload)).catch(() => {}); }
-    catch { this.localSubmissions = Promise.resolve(); }
+    this.pendingLocalSubmission = payload;
+    if (this.localSubmissionBusy) return;
+    this.localSubmissionBusy = true;
+    this.localSubmissions = (async () => {
+      try {
+        while (this.pendingLocalSubmission) {
+          const latest = this.pendingLocalSubmission;
+          this.pendingLocalSubmission = null;
+          if (this.syncActive() && !this.isBlocked()) { try { await this.onLocalItem?.(latest); } catch {} }
+        }
+      } finally { this.localSubmissionBusy = false; }
+    })();
   }
   ignoredSync(syncEventId) { return typeof syncEventId === 'string' && (this.syncEventIds.has(syncEventId) || this.entries.some(entry => entry.eventId === syncEventId)); }
-  async store(content, { pinned = false, automatic = false, fromSync = false, eventId, syncEventId } = {}) {
+  async store(content, { pinned = false, automatic = false, fromSync = false, syncCapture = false, eventId, syncEventId } = {}) {
     if (this.preferencesRecovery) throw new Error(this.error);
     content = { ...content };
     delete content.syncEventId; delete content.token; delete content.sshTarget;
@@ -215,12 +227,12 @@ class ClipboardHistory {
       if (!fromSync && (content.kind === 'text' || content.kind === 'image')) { entry.eventId = crypto.randomUUID(); submission = this.submissionFor(content, entry.eventId, entry.createdAt); }
       this.validateEntry(entry); this.entries.unshift(entry);
     }
-    this.trim(); if (!this.entries.some(entry => entry.hash === hash)) throw new Error('Favourites fill the history limit. Unpin or remove an item first.'); await this.persist(); if (!fromSync) this.lastHash = hash; if (submission) this.emitLocal(submission); return true;
+    this.trim(); if (!this.entries.some(entry => entry.hash === hash)) throw new Error('Favourites fill the history limit. Unpin or remove an item first.'); await this.persist(); if (!fromSync) this.lastHash = hash; if (submission && syncCapture && this.syncActive()) this.emitLocal(submission); return true;
   }
   ingestSync({ eventId, kind, text, png, sourceLabel } = {}) {
     if (typeof eventId !== 'string' || !/^[0-9a-f-]{36}$/.test(eventId)) return Promise.reject(new Error('This clipboard item cannot be synced.'));
     return this.mutate(async () => {
-      if (!this.historyEnabled()) throw new Error('Turn on clipboard history to keep incoming items, or choose the system clipboard.');
+      this.requireTools();
       let content;
       if (kind === 'png') content = { kind: 'image', png, title: 'Copied image' };
       else if (kind === 'text' || kind === 'url') { if (typeof text !== 'string' || !text || Buffer.byteLength(text) > MAX_TEXT) throw new Error('This clipboard item cannot be synced.'); content = { kind: 'text', text, title: text.replace(/\s+/g, ' ').slice(0, 80) }; }
@@ -233,24 +245,33 @@ class ClipboardHistory {
   capture({ automatic = false } = {}) {
     const epoch = this.epoch;
     return this.mutate(async () => {
-      if (automatic && (!this.historyEnabled() || this.settings.paused || this.isBlocked() || epoch !== this.epoch)) return;
+      if (automatic && ((!this.historyEnabled() && !this.syncActive()) || this.settings.paused || this.isBlocked() || epoch !== this.epoch)) return;
       this.requireTools();
       if (!this.available()) throw new Error('Unlock a secure system secret store to save clipboard history.');
       if (this.loadFailed) throw new Error(this.error);
       const raw = await this.readCurrent();
-      if (epoch !== this.epoch || !this.tools.enabled || this.disablingTools || (automatic && (this.isBlocked() || !this.historyEnabled() || this.settings.paused))) return;
+      if (epoch !== this.epoch || !this.tools.enabled || this.disablingTools || (automatic && (this.isBlocked() || (!this.historyEnabled() && !this.syncActive()) || this.settings.paused))) return;
       if (!raw) { if (!automatic) throw new Error('The clipboard is empty, unsupported, or marked private by its source app.'); return; }
       const { syncEventId, ...content } = raw;
       if (this.ignoredSync(syncEventId)) { this.lastHash = this.contentHash(content); return; }
       if (automatic && this.syncSuppressHash && this.contentHash(content) === this.syncSuppressHash && this.now() <= this.syncSuppressUntil) { this.lastHash = this.syncSuppressHash; return; }
-      if (await this.store(content, { automatic, syncEventId })) this.emit();
+      const hash = this.contentHash(content);
+      const baseline = this.syncBaselinePending;
+      this.syncBaselinePending = false;
+      if (automatic && !this.historyEnabled()) {
+        if (hash === this.lastHash) return;
+        this.lastHash = hash;
+        if (!baseline && this.syncActive() && ['text', 'image'].includes(content.kind)) this.emitLocal(this.submissionFor(content, crypto.randomUUID(), this.now()));
+        return;
+      }
+      if (await this.store(content, { automatic, syncEventId, syncCapture: !baseline && this.syncActive() })) this.emit();
     }, { notify: false, returnState: !automatic, requireTools: !automatic });
   }
   async tick() {
     await this.initialized;
     if (!this.tools.enabled || this.disablingTools) return;
     if (this.available() && !this.loadFailed && !this.preferencesRecovery && this.entries.some(e => !e.pinned && e.createdAt < this.now() - this.settings.retentionDays * 86400000)) await this.mutate(async () => { this.trim(); await this.persist(); }, { returnState: false });
-    if (!this.historyEnabled() || this.settings.paused || this.busy || this.isBlocked() || !this.available() || this.loadFailed) return;
+    if ((!this.historyEnabled() && !this.syncActive()) || this.settings.paused || this.busy || this.isBlocked() || !this.available() || this.loadFailed) return;
     this.busy = true; try { await this.capture({ automatic: true }); } catch { /* Never emit clipboard contents or popup from a background read. */ } finally { this.busy = false; }
   }
   async detail(id) { await this.initialized; this.requireTools(); const e = this.entries.find(e => e.id === id); if (!e) throw new Error('This clipboard item is no longer available.'); return { id: e.id, kind: e.kind, title: e.title, ...(e.kind === 'text' ? { text: e.text, html: e.html } : e.kind === 'image' ? { imageDataURL: 'data:image/png;base64,'+e.png } : { files: [...e.files] }) }; }
@@ -258,7 +279,7 @@ class ClipboardHistory {
     return this.mutate(async () => {
       const e = this.entries.find(entry => entry.id === id); if (!e) throw new Error('This clipboard item is no longer available.');
       const data = e.kind === 'text' ? { 'text/plain': new Blob([e.text], { type: 'text/plain' }), ...(!plainText && e.html ? { 'text/html': new Blob([e.html], { type: 'text/html' }) } : {}) } : e.kind === 'image' ? { 'image/png': new Blob([Buffer.from(e.png, 'base64')], { type: 'image/png' }) } : { 'text/uri-list': new Blob([e.files.map(file => pathToFileURL(file).href).join('\r\n')], { type: 'text/uri-list' }) };
-      await this.clipboard.write([new this.ClipboardItem(data)]); this.lastHash = e.kind === 'text' && plainText ? crypto.createHash('sha256').update(JSON.stringify(['text',e.text,undefined,undefined,undefined])).digest('hex') : e.hash; e.lastUsedAt = this.now();
+      await this.clipboard.write([new this.ClipboardItem(data)]); if (this.syncActive() && !this.isBlocked() && ['text', 'image'].includes(e.kind)) this.emitLocal(this.submissionFor(e, crypto.randomUUID(), this.now())); this.lastHash = e.kind === 'text' && plainText ? crypto.createHash('sha256').update(JSON.stringify(['text',e.text,undefined,undefined,undefined])).digest('hex') : e.hash; e.lastUsedAt = this.now();
     });
   }
   setPinned({ id, pinned }) { return this.mutate(async () => { if (typeof pinned !== 'boolean') throw new Error('Choose a favourite state.'); const e = this.entries.find(entry => entry.id === id); if (!e) throw new Error('This clipboard item is no longer available.'); e.pinned = pinned; this.trim(); await this.persist(); }); }

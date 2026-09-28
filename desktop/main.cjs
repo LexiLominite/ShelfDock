@@ -41,17 +41,17 @@ function sshTargetFor(host) {
   return { user: host.user, host: host.address, port: host.port, identityFile };
 }
 async function deliverSyncedClipboard(item) {
-  if (!clipboardHistory || !clipboardSync || !item) return;
+  if (!clipboardHistory || !clipboardSync?.canSend() || !clipboardHistory.toolsState().enabled || !item) throw new Error('Clipboard sync is paused or disabled.');
   const content = item.kind === 'png' ? { kind: 'image', png: item.png } : { kind: 'text', text: item.text };
   const hash = clipboardHistory.contentHash(content);
   clipboardHistory.noteSyncEvent(item.eventId, hash);
+  await clipboardHistory.ingestSync({ eventId: item.eventId, kind: item.kind, text: item.text, png: item.png, sourceLabel: item.originLabel });
+  if (!clipboardSync.canSend() || !clipboardHistory.toolsState().enabled) throw new Error('Clipboard sync was paused or disabled.');
   if (clipboardSync.state().receiveMode === 'clipboard') {
     if (item.kind === 'png') clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(item.png, 'base64')));
     else if (typeof item.text === 'string') clipboard.writeText(item.text);
     clipboardHistory.acknowledgeSyncWrite(hash);
   }
-  if (clipboardHistory.historyEnabled()) await clipboardHistory.ingestSync({ eventId: item.eventId, kind: item.kind, text: item.text, png: item.png, sourceLabel: item.originLabel });
-  else if (clipboardSync.state().receiveMode === 'history') clipboardSync.noteError('Turn on clipboard history to keep incoming items, or choose the system clipboard.');
 }
 let interaction = { dragging: false, editing: false };
 let runtimeSettings = { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' };
@@ -135,12 +135,12 @@ if (singleton) app.whenReady().then(async () => {
     try { await migrateLegacyData({ target: app.getPath('userData'), legacy: path.join(app.getPath('appData'), 'Drift') }); }
     catch (error) { nativeStatus.migrationWarning = error.message; console.warn(error.message); }
   }
-  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || !!service?.appUpdating || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, onLocalItem: payload => clipboardSync?.submitLocal(payload).catch(() => {}), onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); if (service?.state) publish(service.state); } });
+  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || !!service?.appUpdating || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, isSyncEnabled: () => clipboardSync?.canSend() === true, onLocalItem: payload => clipboardSync?.submitLocal(payload).catch(() => {}), onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); if (service?.state) publish(service.state); } });
   await clipboardHistory.initialized;
   if (!backgroundTest) {
-    clipboardSync = new ClipboardSync({ dataDir: app.getPath('userData'), safeStorage, connect: peer => connectSsh(peer.sshTarget), onChange: () => { if (service?.state) publish(service.state); }, onItem: item => { deliverSyncedClipboard(item).catch(() => {}); } });
+    clipboardSync = new ClipboardSync({ dataDir: app.getPath('userData'), safeStorage, connect: peer => connectSsh(peer.sshTarget), isBlocked: () => !clipboardHistory.toolsState().enabled || clipboardHistory.settings.paused || clipboardHistory.isBlocked(), onChange: () => { if (service?.state) publish(service.state); }, onItem: deliverSyncedClipboard });
     await clipboardSync.ready;
-    if (!clipboardHistory.tools.enabled && clipboardSync.state().enabled) await clipboardSync.setEnabled(false);
+    if (clipboardSync.state().enabled) { clipboardHistory.resetSyncBaseline(); await clipboardSync.setEnabled(clipboardHistory.tools.enabled); }
   }
   service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish, safeStorage });
   await service.getState();
@@ -202,8 +202,8 @@ if (singleton) app.whenReady().then(async () => {
   safeHandler('updateClipboardSync', async patch => {
     if (!clipboardHistory.tools?.enabled) throw new Error('Enable Clipboard tools in Settings first.');
     if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
-    if (typeof patch?.enabled === 'boolean') await clipboardSync.setEnabled(patch.enabled);
-    if (typeof patch?.paused === 'boolean') await clipboardSync.setPaused(patch.paused);
+    if (typeof patch?.enabled === 'boolean') { if (patch.enabled) clipboardHistory.resetSyncBaseline(); await clipboardSync.setEnabled(patch.enabled); }
+    if (typeof patch?.paused === 'boolean') { if (!patch.paused) clipboardHistory.resetSyncBaseline(); await clipboardSync.setPaused(patch.paused); }
     if (patch?.receiveMode) await clipboardSync.setReceiveMode(patch.receiveMode);
     return decorate(await service.getState());
   });

@@ -99,7 +99,7 @@ test('exports are the protocol constants and pure helpers', () => {
   assert.equal(PORT, 47635);
   assert.equal(HOST, '127.0.0.1');
   assert.equal(VERSION, 1);
-  assert.equal(MAX_FRAME, 9 * 1024 * 1024);
+  assert.equal(MAX_FRAME, 12 * 1024 * 1024);
   assert.equal(MAX_TEXT, 1024 * 1024);
   assert.equal(MAX_PNG, 8 * 1024 * 1024);
   assert.equal(FRESH_MS, 120000);

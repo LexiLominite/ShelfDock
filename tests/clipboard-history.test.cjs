@@ -220,7 +220,7 @@ test('failed disable persistence still closes the runtime gate and reports failu
 
 test('noteSyncEvent does not recapture a sync write, including a racing identical poll', async t => {
   const submitted = [];
-  const { history, state } = await fixture(t, { onLocalItem: item => submitted.push({ ...item }) });
+  const { history, state } = await fixture(t, { isSyncEnabled: () => true, onLocalItem: item => submitted.push({ ...item }) });
   await history.updatePreferences({ enabled: true });
   state.content = [item('synthetic local text')];
   await history.tick();
@@ -258,7 +258,7 @@ test('noteSyncEvent does not recapture a sync write, including a racing identica
 
 test('tools off does not imply sync and loading history does not submit saved entries', async t => {
   const submitted = [];
-  const { history, state, args, dataDir } = await fixture(t, { onLocalItem: item => submitted.push(item.text) });
+  const { history, state, args, dataDir } = await fixture(t, { isSyncEnabled: () => true, onLocalItem: item => submitted.push(item.text) });
   await history.updatePreferences({ enabled: true });
   state.content = [item('synthetic kept text')];
   await history.tick();
@@ -276,7 +276,7 @@ test('tools off does not imply sync and loading history does not submit saved en
   assert.equal(hidden.token, undefined);
   assert.equal(JSON.stringify(hidden).includes('token'), false);
   assert.equal(JSON.stringify(hidden).includes('synthetic'), false);
-  const restored = new ClipboardHistory({ ...args, onLocalItem: item => submitted.push(item.text) });
+  const restored = new ClipboardHistory({ ...args, isSyncEnabled: () => false, onLocalItem: item => submitted.push(item.text) });
   await restored.initialized;
   assert.equal(restored.entries.length, 1, 'existing history still loads');
   assert.deepEqual(submitted, ['synthetic kept text'], 'turning sync on later must not upload saved entries');
@@ -284,13 +284,13 @@ test('tools off does not imply sync and loading history does not submit saved en
   await restored.updateTools({ enabled: true });
   await restored.tick();
   assert.deepEqual(submitted, ['synthetic kept text']);
-  await assert.rejects(restored.ingestSync({ eventId: require('node:crypto').randomUUID(), kind: 'text', text: 'synthetic incoming', sourceLabel: 'Other computer' }), /Turn on clipboard history to keep incoming items, or choose the system clipboard/);
-  assert.equal(restored.entries.length, 1);
+  await restored.ingestSync({ eventId: require('node:crypto').randomUUID(), kind: 'text', text: 'synthetic incoming', sourceLabel: 'Other computer' });
+  assert.equal(restored.entries.length, 2, 'explicit sync stores received items without opting into automatic history');
 });
 
 test('incoming sync keeps an origin label and export snapshots have no token', async t => {
   const submitted = [];
-  const { history } = await fixture(t, { onLocalItem: item => submitted.push(item) });
+  const { history } = await fixture(t, { isSyncEnabled: () => true, onLocalItem: item => submitted.push(item) });
   await history.updatePreferences({ enabled: true });
   const eventId = require('node:crypto').randomUUID();
   await history.ingestSync({ eventId, kind: 'text', text: 'synthetic incoming', sourceLabel: 'Other computer' });
@@ -337,4 +337,33 @@ test('v0.4.1 automatic tools opt-in resets once without touching history; fresh 
   await restarted.updatePreferences({ enabled: true });
   const optedIn = new ClipboardHistory(args); await optedIn.initialized;
   assert.equal(optedIn.historyEnabled(), true);
+});
+
+
+test('explicit sync captures new copies without automatic history and skips the initial clipboard', async t => {
+  const submitted = [];
+  let enabled = true;
+  const { history, state } = await fixture(t, { isSyncEnabled: () => enabled, onLocalItem: item => submitted.push(item) });
+  history.resetSyncBaseline();
+  await history.tick(); await history.localSubmissions;
+  assert.equal(submitted.length, 0, 'enabling sync does not publish old clipboard contents');
+  state.content = [item('new synthetic copy')];
+  await history.tick(); await history.localSubmissions;
+  assert.equal(submitted.length, 1);
+  assert.equal(history.entries.length, 0, 'sync consent does not enable automatic local history');
+  state.markers = true; state.content = [item('private synthetic copy')];
+  await history.tick(); await history.localSubmissions;
+  assert.equal(submitted.length, 1);
+  enabled = false; const reads = state.reads;
+  await history.tick(); assert.equal(state.reads, reads);
+});
+
+test('saving a snippet does not sync until it is actually copied', async t => {
+  const submitted = [];
+  const { history } = await fixture(t, { isSyncEnabled: () => true, onLocalItem: item => submitted.push(item) });
+  await history.saveSnippet({ text: 'synthetic snippet' }); await history.localSubmissions;
+  assert.equal(submitted.length, 0);
+  await history.copy({ id: history.entries[0].id }); await history.localSubmissions;
+  assert.equal(submitted.length, 1);
+  assert.equal(submitted[0].text, 'synthetic snippet');
 });

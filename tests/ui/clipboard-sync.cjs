@@ -34,8 +34,9 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     assert.equal(await syncSwitch.getAttribute('aria-checked'), 'false');
     assert.equal(await lockedNote.isVisible(), true);
     assert.equal(await lockedNote.getAttribute('hidden'), null);
-    assert.equal(await dialog.getByText('Pair ShelfDock on another computer. Copying can send text, links, and images to the devices you approve. Files stay on the transfer shelf.', { exact: true }).isVisible(), true);
-    assert.equal(await dialog.getByText('Saving to clipboard history does not change what is currently copied.', { exact: true }).isVisible(), true);
+    assert.equal(await dialog.getByText('Keep both ShelfDock apps open while pairing. The computer entering the code needs SSH key access to the selected saved machine. While sync is on, supported text, links, and images can be sent to approved devices. Files stay on the transfer shelf.', { exact: true }).isVisible(), true);
+    assert.equal(await dialog.getByText('Incoming items are saved to history even when automatic history is off. This preference also controls whether sync replaces what is currently copied.', { exact: true }).isVisible(), true);
+    assert.equal(await dialog.getByText(/With Sync on, supported new copies can be sent to paired devices/).isVisible(), true);
     for (const control of [allow, pair, codeInput, machine, direction, history, systemClipboard]) {
       assert.equal(await control.isVisible(), true);
       assert.equal(await control.isDisabled(), true);
@@ -46,7 +47,7 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     assert.deepEqual(await machine.locator('option').evaluateAll((nodes) => nodes.map((node) => node.textContent)), ['Choose a machine', 'Studio', 'Work laptop']);
     assert.equal(await dialog.getByRole('button', { name: 'Pause clipboard sync', exact: true }).count(), 0);
     assert.equal(await dialog.getByRole('button', { name: 'Resume clipboard sync', exact: true }).count(), 0);
-    assert.equal(await dialog.locator('[aria-label="Pairing code"]').count(), 0);
+    assert.equal(await dialog.getByRole('status', { name: /Pairing code/ }).count(), 0);
     assert.deepEqual(page.errors, [], 'Missing clipboardSync does not crash settings');
 
     await dialog.getByRole('switch', { name: 'Enable Clipboard tools', exact: true }).click();
@@ -55,25 +56,23 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
       return control && control.disabled === false && control.getAttribute('aria-checked') === 'false';
     });
     assert.equal(await lockedNote.count(), 0);
-    assert.equal(await allow.isEnabled(), true);
-    assert.equal(await codeInput.isEnabled(), true);
-    assert.equal(await machine.isEnabled(), true);
-    assert.equal(await direction.isEnabled(), true);
+    assert.equal(await allow.isDisabled(), true, 'Pairing is unavailable while sync is off');
+    assert.equal(await codeInput.isDisabled(), true);
+    assert.equal(await machine.isDisabled(), true);
+    assert.equal(await direction.isDisabled(), true);
     assert.equal(await history.isEnabled(), true);
     assert.equal(await history.isChecked(), true);
-    assert.equal(await pair.isDisabled(), true, 'Pairing still needs a machine and a code');
-    await syncSwitch.focus();
-    assert.equal(await syncSwitch.evaluate((node) => node === document.activeElement), true);
+    assert.equal(await pair.isDisabled(), true);
 
     await page.evaluate(() => {
       const publish = () => structuredClone(window.__state);
       const sync = () => {
-        if (!window.__state.clipboardSync || typeof window.__state.clipboardSync !== 'object') window.__state.clipboardSync = { enabled: false, paused: false, receiveMode: 'history', peers: [] };
+        if (!window.__state.clipboardSync || typeof window.__state.clipboardSync !== 'object') window.__state.clipboardSync = { available: true, enabled: false, paused: false, receiveMode: 'history', peers: [] };
         if (!Array.isArray(window.__state.clipboardSync.peers)) window.__state.clipboardSync.peers = [];
         return window.__state.clipboardSync;
       };
       window.drift.updateClipboardSync = async (value) => { window.__calls.push({ method: 'updateClipboardSync', value }); Object.assign(sync(), value); return publish(); };
-      window.drift.beginClipboardPairing = async () => { window.__calls.push({ method: 'beginClipboardPairing' }); sync().pairing = { code: '123456', expiresAt: '2026-09-28T09:35:00.000Z' }; return publish(); };
+      window.drift.beginClipboardPairing = async () => { window.__calls.push({ method: 'beginClipboardPairing' }); sync().pairing = { code: 'ABCDEFGH', expiresAt: '2026-09-28T09:35:00.000Z' }; return publish(); };
       window.drift.pairClipboardSync = async (value) => { window.__calls.push({ method: 'pairClipboardSync', value }); return publish(); };
       window.drift.updateClipboardPeer = async (value) => {
         window.__calls.push({ method: 'updateClipboardPeer', value });
@@ -87,7 +86,58 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
         current.peers = current.peers.filter((peer) => peer.id !== value.id);
         return publish();
       };
-      window.__state.clipboardSync = { enabled: true, paused: false, receiveMode: 'history', error: 'Studio does not have a ready ShelfDock sync endpoint.', peers: [{ id: 'peer-studio', label: 'Studio', direction: 'both', paused: false, hostId: 'host-0' }] };
+    });
+
+    await syncSwitch.click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Sync between devices"]')?.getAttribute('aria-checked') === 'true');
+    assert.equal(await allow.isEnabled(), true);
+    assert.equal(await codeInput.isEnabled(), true);
+    assert.equal(await machine.isEnabled(), true);
+    assert.equal(await direction.isEnabled(), true);
+    assert.equal(await pair.isDisabled(), true, 'Pairing still needs a machine and a valid code');
+    assert.equal(await codeInput.getAttribute('maxLength'), '8');
+    assert.equal(await codeInput.getAttribute('pattern'), '[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}');
+    assert.equal(await dialog.getByText('Enter the 8-character code shown on the other computer. The code uses letters and numbers without I, O, 0, or 1.', { exact: true }).isVisible(), true);
+    await machine.selectOption('host-0');
+    await codeInput.fill('ABCDEFGI');
+    assert.equal(await pair.isDisabled(), true, 'Ambiguous and invalid characters cannot be paired');
+    assert.equal(await codeInput.getAttribute('aria-invalid'), 'true');
+    await codeInput.fill('abcdefgh');
+    assert.equal(await codeInput.inputValue(), 'ABCDEFGH', 'Typed codes are normalized to uppercase');
+    assert.equal(await codeInput.getAttribute('aria-invalid'), 'false');
+    assert.equal(await pair.isEnabled(), true);
+    await syncSwitch.focus();
+    assert.equal(await syncSwitch.evaluate((node) => node === document.activeElement), true);
+
+    await page.evaluate(() => {
+      window.__state.clipboardSync.available = false;
+      window.__listeners.state(structuredClone(window.__state));
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Pair this computer')?.disabled === true);
+    assert.equal(await allow.isDisabled(), true, 'Pairing is blocked when secure storage is unavailable');
+    assert.equal(await machine.isDisabled(), true);
+    assert.equal(await codeInput.isDisabled(), true);
+    assert.equal(await dialog.getByRole('status').filter({ hasText: 'A secure system store is unavailable.' }).isVisible(), true);
+    await page.evaluate(() => {
+      window.__state.clipboardSync.available = true;
+      window.__listeners.state(structuredClone(window.__state));
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Allow pairing')?.disabled === false);
+
+    const globalPause = dialog.getByRole('button', { name: 'Pause clipboard sync', exact: true });
+    await globalPause.click();
+    await dialog.getByRole('button', { name: 'Resume clipboard sync', exact: true }).waitFor();
+    assert.deepEqual((await calls(page, 'updateClipboardSync')).at(-1), { paused: true });
+    assert.equal(await allow.isDisabled(), true, 'Pairing is blocked while sync is paused');
+    assert.equal(await codeInput.isDisabled(), true);
+    assert.equal(await machine.isDisabled(), true);
+    assert.equal(await direction.isDisabled(), true);
+    assert.equal(await pair.isDisabled(), true);
+    await dialog.getByRole('button', { name: 'Resume clipboard sync', exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Allow pairing')?.disabled === false);
+
+    await page.evaluate(() => {
+      window.__state.clipboardSync = { available: true, enabled: true, paused: false, receiveMode: 'history', error: 'Studio does not have a ready ShelfDock sync endpoint.', peers: [{ id: 'peer-studio', label: 'Studio', direction: 'both', paused: false, status: 'connected', hostId: 'host-0' }] };
       window.__clips.entries[0].sourceLabel = 'Studio';
       window.__listeners.state(structuredClone(window.__state));
     });
@@ -96,17 +146,31 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     const revoke = dialog.getByRole('button', { name: 'Revoke', exact: true });
     await revoke.waitFor();
     assert.equal(await revoke.isEnabled(), true);
+    assert.equal(await dialog.getByText('Connected', { exact: true }).isVisible(), true);
     assert.equal(await dialog.getByText('Revoke stops that computer immediately. Clipboard history on this device stays here.', { exact: true }).isVisible(), true);
     assert.match(await dialog.getByRole('alert').innerText(), /Studio does not have a ready ShelfDock sync endpoint/);
-    const pause = dialog.getByRole('button', { name: 'Pause clipboard sync', exact: true });
-    await pause.waitFor();
-    assert.equal(await pause.isEnabled(), true);
-    await pause.click();
+
+    await page.evaluate(() => {
+      window.__state.clipboardSync.peers[0].status = 'offline';
+      window.__listeners.state(structuredClone(window.__state));
+    });
+    await page.waitForFunction(() => [...document.querySelectorAll('.clipboard-sync-peer-status')].some(node => node.textContent === 'Offline'));
+    assert.equal(await dialog.getByText('Offline', { exact: true }).isVisible(), true);
+    await page.evaluate(() => {
+      window.__state.clipboardSync.peers[0].status = 'connected';
+      window.__listeners.state(structuredClone(window.__state));
+    });
+
+    await dialog.getByRole('button', { name: 'Pause clipboard sync', exact: true }).click();
     await dialog.getByRole('button', { name: 'Resume clipboard sync', exact: true }).waitFor();
-    assert.deepEqual((await calls(page, 'updateClipboardSync')).at(-1), { paused: true });
+    assert.equal(await dialog.getByText('Paused on this computer', { exact: true }).isVisible(), true);
+    assert.equal(await allow.isDisabled(), true);
+    await dialog.getByRole('button', { name: 'Resume clipboard sync', exact: true }).click();
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].find((button) => button.textContent.trim() === 'Allow pairing')?.disabled === false);
 
     await dialog.getByRole('combobox', { name: 'Direction for Studio', exact: true }).selectOption('send');
     await dialog.getByRole('button', { name: 'Pause sync with Studio', exact: true }).click();
+    assert.equal(await dialog.getByText('Paused here', { exact: true }).isVisible(), true, 'Peer pause state is shown with its source');
     await revoke.click();
     await page.waitForFunction(() => window.__calls.some((call) => call.method === 'revokeClipboardPeer'));
     assert.deepEqual(await page.evaluate(() => window.__calls.filter((call) => call.method === 'updateClipboardPeer').map((call) => call.value)), [
@@ -117,16 +181,16 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     assert.equal(await dialog.getByRole('button', { name: 'Revoke', exact: true }).count(), 0);
 
     await allow.click();
-    const pairingCode = dialog.locator('[aria-label="Pairing code"]');
-    await pairingCode.waitFor();
-    assert.equal((await pairingCode.innerText()).trim(), '123456');
+    const pairingStatus = dialog.getByRole('status', { name: 'Pairing code ABCDEFGH', exact: true });
+    await pairingStatus.waitFor();
+    assert.equal((await pairingStatus.innerText()).trim(), 'ABCDEFGH');
     assert.equal(await dialog.locator('.clipboard-sync-expiry time').getAttribute('dateTime'), '2026-09-28T09:35:00.000Z');
     await machine.selectOption('host-0');
-    await codeInput.fill('654321');
+    await codeInput.fill('234567ab');
     await direction.selectOption('receive');
     await pair.click();
     await page.waitForFunction(() => window.__calls.some((call) => call.method === 'pairClipboardSync'));
-    assert.deepEqual(await page.evaluate(() => window.__calls.find((call) => call.method === 'pairClipboardSync').value), { hostId: 'host-0', code: '654321', direction: 'receive' });
+    assert.deepEqual(await page.evaluate(() => window.__calls.find((call) => call.method === 'pairClipboardSync').value), { hostId: 'host-0', code: '234567AB', direction: 'receive' });
 
     await history.focus();
     await history.press('ArrowDown');
@@ -135,6 +199,10 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     await syncSwitch.focus();
     await syncSwitch.press('Space');
     await page.waitForFunction(() => window.__calls.some((call) => call.method === 'updateClipboardSync' && call.value && call.value.enabled === false));
+    assert.equal(await allow.isDisabled(), true, 'Pairing is blocked after sync is turned off');
+    assert.equal(await machine.isDisabled(), true);
+    assert.equal(await codeInput.isDisabled(), true);
+    assert.equal(await pair.isDisabled(), true);
     assert.equal(await page.locator('.toast').count(), 0, 'Sync actions do not raise success toasts');
     assert.deepEqual(page.errors, []);
 
@@ -151,7 +219,7 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     assert.notEqual(sourceName, 'From Studio');
     assert.equal(await page.locator('.clipboard-entry').nth(1).locator('.clipboard-source').count(), 0);
     assert.deepEqual(page.errors, []);
-    console.log('Clipboard sync: disabled until tools are on, settings controls reachable by name, revoke for a seeded peer, From Studio on the history row.');
+    console.log('Clipboard sync: pairing gates, code validation, receive preference, peer state, and accessible pairing code.');
     await page.close();
   } finally { await app.close(); }
 })().catch((error) => { console.error(error); process.exitCode = 1; });

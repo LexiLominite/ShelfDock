@@ -6,7 +6,7 @@ const { validateClipboardPNG } = require('./clipboard.cjs');
 const PORT = 47635;
 const HOST = '127.0.0.1';
 const VERSION = 1;
-const MAX_FRAME = 9 * 1024 * 1024;
+const MAX_FRAME = 12 * 1024 * 1024;
 const MAX_TEXT = 1024 * 1024;
 const MAX_PNG = 8 * 1024 * 1024;
 const FRESH_MS = 120000;
@@ -51,7 +51,7 @@ function requireToken(value) {
 }
 
 function requireLabel(value) {
-  if (typeof value !== 'string' || value.length < 1 || value.length > 80) fail(MESSAGE_MALFORMED);
+  if (typeof value !== 'string' || value.length < 1 || value.length > 80 || /[\x00-\x1f\x7f]/.test(value)) fail(MESSAGE_MALFORMED);
 }
 
 function requireDirection(value) {
@@ -98,6 +98,13 @@ function validateMessage(message) {
   if (!isRecord(message)) fail(MESSAGE_MALFORMED);
   if (message.v !== VERSION) fail(VERSION_UNSUPPORTED);
   switch (message.type) {
+    case 'hello-ok':
+      requireUuid(message.deviceId);
+      return message;
+    case 'ack':
+      requireUuid(message.deviceId);
+      requireUuid(message.eventId);
+      return message;
     case 'hello':
       requireUuid(message.deviceId);
       requireToken(message.token);
