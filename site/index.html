@@ -4,23 +4,26 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#E8EBF6">
-  <title>ShelfDock — a desktop shelf for files, text and your machines</title>
-  <meta name="description" content="Collect files and text in a small desktop shelf, send them to your SSH machines, and keep optional clipboard tools close. Explore the ShelfDock desktop preview.">
+  <link rel="canonical" href="https://shelfdock.lexilominite.com/">
+  <title>ShelfDock — File Transfer Shelf &amp; Optional Clipboard Manager</title>
+  <meta name="description" content="Send files and text between Mac, Windows and Linux over SSH. ShelfDock combines a desktop shelf, optional clipboard history, received files and port forwarding.">
   <meta property="og:type" content="website">
+  <meta property="og:url" content="https://shelfdock.lexilominite.com/">
+  <meta property="og:site_name" content="ShelfDock">
   <meta property="og:title" content="ShelfDock — give your files a place to land">
   <meta property="og:description" content="A desktop shelf for moving files and text between your machines. Optional clipboard tools, clear SSH connections, and room to work.">
-  <meta property="og:image" content="assets/social-card.png">
+  <meta property="og:image" content="https://shelfdock.lexilominite.com/assets/social-card.png">
   <meta property="og:image:alt" content="ShelfDock desktop shelf with fictional files and Studio and Workshop machines">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="ShelfDock — give your files a place to land">
   <meta name="twitter:description" content="A small desktop shelf for your files, text and SSH machines. Clipboard tools are optional and off by default.">
-  <meta name="twitter:image" content="assets/social-card.png">
+  <meta name="twitter:image" content="https://shelfdock.lexilominite.com/assets/social-card.png">
   <link rel="icon" type="image/svg+xml" href="assets/mark.svg">
   <link rel="stylesheet" href="styles.css">
   <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"ShelfDock","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS, Windows, Linux","softwareVersion":"0.5.0","description":"Desktop transfer shelf for files and text, with SSH machine connections and optional clipboard tools. Preview builds; platform validation varies.","downloadUrl":"https://github.com/LexiLominite/ShelfDock/releases","author":{"@type":"Person","name":"LexiLominite","url":"https://github.com/LexiLominite"}}
+  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"ShelfDock","url":"https://shelfdock.lexilominite.com/","applicationCategory":"UtilitiesApplication","operatingSystem":"macOS, Windows, Linux","softwareVersion":"0.5.0","description":"Desktop transfer shelf for files and text, with SSH machine connections and optional clipboard tools. Preview builds; platform validation varies.","downloadUrl":"https://github.com/LexiLominite/ShelfDock/releases","author":{"@type":"Person","name":"LexiLominite","url":"https://github.com/LexiLominite"}}
   </script>
   <script src="app.js" defer></script>
 </head>
@@ -73,7 +76,7 @@
 
     <section id="clipboard" class="section wrap clipboard-section" aria-labelledby="clipboard-title"><div class="clipboard-illustration" aria-hidden="true"><div class="note-sheet rear">A link worth keeping.<br><span>example.com/ideas</span></div><div class="note-sheet front"><span class="note-pin">⌑</span><strong>That thing you copied<br>three things ago.</strong><div></div><div></div><div></div><span class="note-search">⌕ Find it again</span></div></div><div><span class="feature-state">Optional · off by default</span><h2 id="clipboard-title">A longer memory.<br>Only if you ask.</h2><p>Enable Clipboard tools when they’re useful to you. Search text, revisit images and file references, pin favourites, or keep a reusable snippet nearby.</p><ul class="simple-list"><li>Copy with formatting, or as plain text.</li><li>Add something to Transfers before sending.</li><li>Choose history recording separately. Pause it any time.</li><li>Keep saved history encrypted on this device.</li></ul><p class="quiet-copy">Clipboard tools and automatic recording both start off. There’s no automatic clipboard sharing between machines.</p></div></section>
 
-    <section class="section wrap details-section" aria-labelledby="details-title"><div class="section-intro"><h2 id="details-title">The useful details<br>have a place, too.</h2></div><div class="detail-rows"><article><span class="detail-symbol" aria-hidden="true">↗</span><div><h3>A small bar for a remote service</h3><p>Enter <code>http://localhost:1331</code> for the selected machine and choose Go. Save the connection to reopen it in one click. Advanced controls reveal the SSH direction and port settings; live connections have a Stop action.</p></div></article><article><span class="detail-symbol" aria-hidden="true">⇄</span><div><h3>Take your setup with you</h3><p>Import or export your machines and preferences. Passwords, private keys and clipboard contents stay out. Review network addresses before sharing an export.</p></div></article><article><span class="detail-symbol" aria-hidden="true">▤</span><div><h3>The amount of room you need</h3><p>Compact for quick scanning. Balanced for everyday work. Expanded when you want more space. Your chosen view stays with you.</p></div></article><article><span class="detail-symbol" aria-hidden="true">↶</span><div><h3>A moment to change your mind</h3><p>Clear the shelf, then Undo within ten seconds. Ordinary source files stay where they were. Sending creates a new destination folder rather than replacing existing files.</p></div></article></div></section>
+    <section class="section wrap details-section" aria-labelledby="details-title"><div class="section-intro"><h2 id="details-title">The useful details<br>have a place, too.</h2></div><div class="detail-rows"><article><span class="detail-symbol" aria-hidden="true">↗</span><div><h3>A small bar for a remote service</h3><p>Enter <code>localhost:8000</code> or a LAN address as reached from the selected machine. Go forwards it here and opens your browser. Busy local ports automatically step to the next free port; Advanced offers a custom port. Copy the live local URL, or stop the connection from its chip.</p></div></article><article><span class="detail-symbol" aria-hidden="true">⇄</span><div><h3>Take your setup with you</h3><p>Import or export your machines and preferences. Passwords, private keys and clipboard contents stay out. Review network addresses before sharing an export.</p></div></article><article><span class="detail-symbol" aria-hidden="true">▤</span><div><h3>The amount of room you need</h3><p>Compact for quick scanning. Balanced for everyday work. Expanded when you want more space. Your chosen view stays with you.</p></div></article><article><span class="detail-symbol" aria-hidden="true">↶</span><div><h3>A moment to change your mind</h3><p>Clear the shelf, then Undo within ten seconds. Ordinary source files stay where they were. Sending creates a new destination folder rather than replacing existing files.</p></div></article></div></section>
 
     <section class="next-preview wrap" aria-labelledby="next-title"><div><span class="feature-state">New in the 0.5 preview</span><h2 id="next-title">A clearer record of what moved.</h2><p>Keep Sent and Received items in a dedicated history view. Choose update checks when you want them; verified downloads can happen in the background, and installation waits for your explicit Restart and install.</p></div><a class="button secondary" href="https://github.com/LexiLominite/ShelfDock/releases">Follow the release notes</a></section>
 

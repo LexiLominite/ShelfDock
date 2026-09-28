@@ -442,3 +442,34 @@ test('discovery rechecks a Mac installation lock after waiting for the other dis
     release(); await assert.rejects(pending, /Mac installation/); assert.equal(calls.length, 0); service.macInstallation = false;
   }
 });
+
+
+test('a per-machine SSH check does not attempt unrelated saved passwords', async t => {
+  const { service, calls } = await fixture(t);
+  await service.saveHost({ name: 'Chosen', address: 'chosen.example.test', user: 'me' });
+  await service.saveHost({ name: 'Other', address: 'other.example.test', user: 'me' });
+  service.state.environment.sshAvailable = true;
+  const chosen = service.state.hosts.find(host => host.name === 'Chosen');
+  const other = service.state.hosts.find(host => host.name === 'Other');
+  let passwordAttempts = 0;
+  service.passwordAuth.metadata = host => ({ hasSavedPassword: host.id === other.id });
+  service.passwordAuth.withPassword = async () => { passwordAttempts++; throw new Error('Authentication failed'); };
+  const state = await service.probeHosts({ hostId: chosen.id });
+  assert.equal(state.hosts.find(host => host.id === chosen.id).status, 'ready');
+  assert.equal(state.hosts.find(host => host.id === other.id).status, 'unknown');
+  assert.equal(passwordAttempts, 0);
+  assert.equal(calls.filter(call => call.command === 'ssh' && call.args.at(-1) === 'echo DRIFT_READY').length, 1);
+  await assert.rejects(service.probeHosts({ hostId: 'missing' }), /existing machine/);
+});
+
+test('invisible filename direction controls fail before uploading a batch', async t => {
+  const { service, directory, calls } = await fixture(t);
+  const hostId = await readyHost(service);
+  const filename = path.join(directory, 'report\u202e.txt');
+  await fs.writeFile(filename, 'ordinary file');
+  const state = await service.enqueueFiles([filename]);
+  const result = await service.send({ hostId, itemIds: state.items.map(item => item.id) });
+  assert.equal(result.history[0].status, 'failed');
+  assert.match(result.history[0].message, /Rename it before sending/);
+  assert.equal(calls.some(call => call.command === 'scp'), false);
+});

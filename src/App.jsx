@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, CheckCheck, ChevronDown, CircleAlert, Clipboard, Download, File, FileText, Folder, History, KeyRound, Laptop, Loader2, Monitor, MoreHorizontal, MousePointer2, Network, Pencil, Plus, RefreshCw, Search, Send, Server, Settings2, Trash2, Undo2, Upload, Wifi, X } from 'lucide-react';
 import ClipboardPanel from './ClipboardPanel';
+import { tabbableElements } from './focus.mjs';
 import TunnelPanel from './TunnelPanel';
 import MachineCard from './MachineCard';
 import MacInstallPanel from './MacInstallPanel';
 import ReceivedPanel from './ReceivedPanel';
 import UpdatesPanel from './UpdatesPanel';
+import OnboardingPanel, { onboardingSettled, writeOnboardingRecord } from './OnboardingPanel';
 
 const ITEM_MIME = 'application/x-drift-items';
 const emptyState = { clipboardTools: { enabled: false, showTab: true, historyEnabled: false }, hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
@@ -62,6 +64,12 @@ function App() {
   const [dragging, setDragging] = useState(false);
   const [dragSnapshot, setDragSnapshot] = useState(null);
   const [modal, setModal] = useState(null);
+  const [onboardingMode, setOnboardingMode] = useState('quick');
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [windowSeen, setWindowSeen] = useState(() => globalThis.document?.visibilityState !== 'hidden');
+  const onboardingOffered = useRef(false);
+  const modalState = useRef(null);
+  modalState.current = modal;
   const [hostForm, setHostForm] = useState(freshHost);
   const [accessHostId, setAccessHostId] = useState('');
   const [accessMode, setAccessMode] = useState('key');
@@ -94,8 +102,22 @@ function App() {
   const suppressPasteUntil = useRef(0);
   const modalRef = useRef(null);
   const closeModal = useCallback(() => {
-    if (accessLock.current || tunnelLock.current || macInstallLock.current || updateLock.current) return;
+    const leavingOnboarding = modalState.current === 'onboarding';
+    if (!leavingOnboarding && (accessLock.current || tunnelLock.current || macInstallLock.current || updateLock.current)) return;
+    if (leavingOnboarding) writeOnboardingRecord('skipped');
     setAccessPassword(''); setAccessError(''); setAccessHostId(''); setModal(null);
+  }, []);
+  const finishOnboarding = useCallback(() => { writeOnboardingRecord('completed'); setModal(null); }, []);
+  const replayQuickStart = useCallback(() => { setOnboardingMode('quick'); setOnboardingStep(0); setModal('onboarding'); }, []);
+  const openFeatureGuide = useCallback(() => { setOnboardingMode('learn'); setModal('onboarding'); }, []);
+  const navigateFromOnboarding = useCallback((target) => {
+    writeOnboardingRecord('skipped'); setModal(null);
+    if (target === 'density') requestAnimationFrame(() => document.querySelector('[aria-label="Display density"]')?.focus());
+    if (target === 'settings') { setModal('settings'); return; }
+    if (target === 'received') setActiveSection('received');
+    if (target === 'shelf' || target === 'density') setActiveSection('transfers');
+    if (target === 'machines') { setMachinesOpen(true); setActiveSection('transfers'); }
+    if (target === 'activity') setHistoryOpen(true);
   }, []);
   const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current || macInstallLock.current || updateLock.current, []);
   const closeQuick = useCallback(() => { if (!tunnelLock.current) setQuickHost(null); }, []);
@@ -135,9 +157,19 @@ function App() {
     let mounted = true;
     Promise.resolve(bridge.getState()).then((next) => { if (mounted) applyState(next); }).catch((error) => noticeNow(error.message || `Could not load ${productName}.`, 'error')).finally(() => { if (mounted) setLoading(false); });
     const offState = bridge.onState?.(applyState);
-    const offReveal = bridge.onReveal?.(() => { setReveal(true); setTimeout(() => setReveal(false), 600); });
+    const offReveal = bridge.onReveal?.(() => { setWindowSeen(true); setReveal(true); setTimeout(() => setReveal(false), 600); });
     return () => { mounted = false; offState?.(); offReveal?.(); };
   }, [bridge, applyState, noticeNow]);
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState !== 'hidden') setWindowSeen(true); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+  useEffect(() => {
+    if (onboardingOffered.current || !windowSeen || (!isDemo && loading)) return;
+    onboardingOffered.current = true;
+    if (!onboardingSettled()) { setOnboardingMode('quick'); setOnboardingStep(0); setModal((current) => current ?? 'onboarding'); }
+  }, [windowSeen, isDemo, loading]);
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
   useEffect(() => {
     if (typeof bridge?.getTunnels !== 'function') return;
@@ -183,13 +215,14 @@ function App() {
     if (!modal) return;
     const before = document.activeElement;
     const returnTo = modal === 'install' ? document.querySelector(`[data-host-id="${CSS.escape(installHostId)}"] button[aria-haspopup="menu"]`) : before;
-    const focusTimer = setTimeout(() => (modalRef.current?.querySelector('input:not(:disabled), textarea:not(:disabled), select:not(:disabled)') || modalRef.current?.querySelector('button:not(:disabled)'))?.focus(), 0);
+    const focusTimer = setTimeout(() => { const nodes = tabbableElements(modalRef.current); (nodes.find(node => node.matches('input, textarea, select')) || nodes[0])?.focus(); }, 0);
     const trap = (event) => {
       if (event.key === 'Escape') { event.preventDefault(); closeModal(); return; }
       if (event.key !== 'Tab') return;
-      const nodes = Array.from(modalRef.current?.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]') || []);
+      const nodes = tabbableElements(modalRef.current);
       if (!nodes.length) return;
-      if (event.shiftKey && document.activeElement === nodes[0]) { event.preventDefault(); nodes.at(-1).focus(); }
+      if (!modalRef.current?.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? nodes.at(-1) : nodes[0]).focus(); }
+      else if (event.shiftKey && document.activeElement === nodes[0]) { event.preventDefault(); nodes.at(-1).focus(); }
       else if (!event.shiftKey && document.activeElement === nodes.at(-1)) { event.preventDefault(); nodes[0].focus(); }
     };
     document.addEventListener('keydown', trap);
@@ -211,12 +244,12 @@ function App() {
       endDrag();
       if (modal) return;
       if (historyOpen) { setHistoryOpen(false); return; }
-      if (isDemo) { setMachinesOpen(false); return; }
-      bridge.hideWindow();
+      if (machinesOpen) { event.preventDefault(); setMachinesOpen(false); return; }
+      if (!isDemo) bridge.hideWindow();
     };
     document.addEventListener('keydown', escape);
     return () => document.removeEventListener('keydown', escape);
-  }, [modal, historyOpen, bridge, isDemo, endDrag, machineMenu, quickHost, closeQuick]);
+  }, [modal, historyOpen, bridge, isDemo, endDrag, machineMenu, quickHost, closeQuick, machinesOpen]);
 
   const demoCall = async (method, value) => {
     const current = stateRef.current;
@@ -334,6 +367,7 @@ function App() {
   };
   const dropTray = async (event) => {
     event.preventDefault(); event.stopPropagation(); dragDepth.current = 0; setTrayDrag(false); setDragging(false);
+    if (modal) return;
     if (event.dataTransfer.types.includes(ITEM_MIME)) return;
     try { await extractExternal(event.dataTransfer); noticeNow('Added to your shelf. Drop it on a machine when you’re ready.'); }
     catch (error) { noticeNow(error.message, 'error'); }
@@ -357,6 +391,7 @@ function App() {
   };
   const dropHost = async (event, host) => {
     event.preventDefault(); event.stopPropagation(); endDrag();
+    if (modal) return;
     if (accessLock.current) { noticeNow('Wait for access setup to finish before sending.', 'error'); return; }
     if (host.status !== 'ready' || busy === 'send' || busy === 'sendMany') { noticeNow(host.status !== 'ready' ? 'This machine needs a successful SSH check before you can send.' : 'A transfer is already in progress.', 'error'); return; }
     const internal = event.dataTransfer.getData(ITEM_MIME);
@@ -408,7 +443,7 @@ function App() {
     setAccessPassword(''); setAccessError(''); accessLock.current = true; setBusy('configureAccess');
     try {
       if (mode === 'key' && stateRef.current.hosts.find((host) => host.id === hostId)?.hasSavedPassword) await call('forgetPassword', hostId);
-      const next = mode === 'key' ? await call('probeHosts') : await call('configureAccess', { hostId, mode, password });
+      const next = mode === 'key' ? await call('probeHosts', { hostId }) : await call('configureAccess', { hostId, mode, password });
       const host = next?.hosts?.find((entry) => entry.id === hostId);
       if (host?.status !== 'ready') throw new Error(host?.error || 'Access could not be verified. Check the address, SSH service, and credentials, then try again.');
       setModal(null); setAccessHostId('');
@@ -483,14 +518,15 @@ function App() {
   const undoExpiresAt = Date.parse(state.clearShelfUndo?.expiresAt || '');
   const undoSeconds = Math.max(0, Math.ceil((undoExpiresAt - Math.max(undoClock, Date.now())) / 1000));
   const canUndoClear = state.clearShelfUndo?.count > 0 && undoSeconds > 0;
+  const modalTitle = modal === 'onboarding' ? `${productName} ${onboardingMode === 'learn' ? 'feature guide' : 'quick start'}` : modal === 'updates' ? 'Updates' : modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on this device' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`;
 
   return (
-    <div className={`app view-${state.settings?.viewMode || 'expanded'} ${machinesOpen ? 'machines-open' : ''} ${dragging ? 'is-dragging' : ''} ${reveal ? 'revealed' : ''}`} onFocusCapture={event => setFieldFocused(/INPUT|TEXTAREA|SELECT/.test(event.target.tagName))} onBlurCapture={event => { if (!/INPUT|TEXTAREA|SELECT/.test(event.relatedTarget?.tagName || '')) setFieldFocused(false); }} onDragEnter={() => { if (!dragging) { setDragSnapshot(orderHosts(stateRef.current.hosts)); setDragging(true); } setMachinesOpen(true); }} onDragLeave={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return; if (event.target === event.currentTarget || event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom || (event.clientX === 0 && event.clientY === 0)) endDrag(); }} onDragOver={(event) => { event.preventDefault(); if (!machinesOpen) setMachinesOpen(true); }} onDropCapture={endDrag} onDrop={(event) => { event.preventDefault(); endDrag(); }}>
+    <div className={`app view-${state.settings?.viewMode || 'expanded'} ${machinesOpen ? 'machines-open' : ''} ${dragging ? 'is-dragging' : ''} ${reveal ? 'revealed' : ''}`} onFocusCapture={event => setFieldFocused(/INPUT|TEXTAREA|SELECT/.test(event.target.tagName))} onBlurCapture={event => { if (!/INPUT|TEXTAREA|SELECT/.test(event.relatedTarget?.tagName || '')) setFieldFocused(false); }} onDragEnter={(event) => { if (modal) { event.preventDefault(); return; } if (!dragging) { setDragSnapshot(orderHosts(stateRef.current.hosts)); setDragging(true); } setMachinesOpen(true); }} onDragLeave={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return; if (event.target === event.currentTarget || event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom || (event.clientX === 0 && event.clientY === 0)) endDrag(); }} onDragOver={(event) => { event.preventDefault(); if (modal) return; if (!machinesOpen) setMachinesOpen(true); }} onDropCapture={endDrag} onDrop={(event) => { event.preventDefault(); endDrag(); }}>
       <header className="titlebar">
         <div className="brand"><span className="brand-icon"><span /><span /><span /></span><span>{productName}<span className="brand-period">.</span></span></div>
         <div className="header-actions">
           {isDemo && <span className="demo-label">Demo preview</span>}
-          <button className={`machines-toggle ${machinesOpen ? 'active' : ''}`} onMouseEnter={() => setMachinesOpen(true)} onFocus={() => setMachinesOpen(true)} onClick={() => setMachinesOpen(true)} aria-expanded={machinesOpen} aria-controls="machines-pane"><Monitor size={15} /> Machines <span className="count">{state.hosts.length} · {state.hosts.filter(host => host.status === 'ready').length} ready</span><ChevronDown size={13} /></button>
+          <button className={`machines-toggle ${machinesOpen ? 'active' : ''}`} onMouseEnter={() => setMachinesOpen(true)} onClick={() => setMachinesOpen(true)} aria-expanded={machinesOpen} aria-controls="machines-pane"><Monitor size={15} /> Machines <span className="count">{state.hosts.length} · {state.hosts.filter(host => host.status === 'ready').length} ready</span><ChevronDown size={13} /></button>
           <button className="icon-button settings-button" aria-label="Settings" title={state.updatesSummary?.downloadedVersion ? `Settings · Update ${state.updatesSummary.downloadedVersion} ready to install` : state.updatesSummary?.availableVersion ? `Settings · Update ${state.updatesSummary.availableVersion} available` : 'Settings'} onClick={() => setModal('settings')}><Settings2 size={17} />{state.updatesSummary?.availableVersion && <span className="settings-update-dot" aria-label="Update available" />}</button>
           <span className="header-divider" />
           <button className="icon-button hide-button" aria-label={`Hide ${productName}`} title={`Hide ${productName} · shake or press ⌘ / Ctrl + Shift + Space to show it again`} onClick={() => isDemo ? noticeNow(`In the desktop app, ${productName} tucks into your menu bar.`) : bridge.hideWindow()}><X size={17} /></button>
@@ -528,13 +564,13 @@ function App() {
           {selectedHostIds.length > 0 && <div className="batch-machine-selection"><span>{selectedHostIds.length} selected for a batch</span><button className="text-button" disabled={sending || settingUpAccess} onClick={() => setSelectedHostIds([])}>Clear</button></div>}
           <div className="machine-search"><Search size={14} /><input disabled={tunnelBusy || dragging} aria-label="Search machines" placeholder="Find a machine…" value={search} onChange={(event) => setSearch(event.target.value)} />{search && <button aria-label="Clear search" onClick={() => setSearch('')}><X size={12} /></button>}</div>
           <div className="route-tabs" role="group" aria-label="Connection route">{[['all', 'All'], ['tailscale', 'Tailscale'], ['lan', 'LAN'], ['ssh', 'SSH']].map(([value, label]) => <button key={value} disabled={tunnelBusy || dragging} aria-pressed={filter === value} className={filter === value ? 'selected' : ''} onClick={() => setFilter(value)}>{label}</button>)}</div>
-          <div className="machine-list">{loading ? <div className="empty-machines"><Loader2 size={22} className="spinning" /><p>Finding your machines…</p></div> : visibleHosts.length === 0 ? <div className="empty-machines"><Network size={24} /><strong>{search ? 'No matches' : 'A place to start'}</strong><p>{search ? 'Try another name or address.' : 'Import Wave and SSH connections, or add a machine yourself.'}</p></div> : visibleHosts.map((host) => <MachineCard key={host.id} host={host} selected={selectedHost === host.id} onSelect={() => setSelectedHost(host.id)} batchSelected={selectedHostIds.includes(host.id)} batchDisabled={sending || settingUpAccess || tunnelBusy || (!selectedHostIds.includes(host.id) && (host.status !== 'ready' || selectedHostIds.length >= 20))} onBatch={() => toggleBatchHost(host)} onAccess={() => openAccess(host)} onViewForwards={() => openTunnels(host.id, 'local', 'active')} onMenu={event => showMachineMenu(event,host)} menuOpen={machineMenu?.hostId === host.id} dropState={dragHost === host.id ? host.status === 'ready' ? 'drop-ready' : 'drop-blocked' : ''} dropHandlers={{
+          <div className="machine-list">{loading ? <div className="empty-machines"><Loader2 size={22} className="spinning" /><p>Finding your machines…</p></div> : visibleHosts.length === 0 ? <div className="empty-machines"><Network size={24} /><strong>{search ? 'No matches' : 'A place to start'}</strong><p>{search ? 'Try another name or address.' : 'Import Wave and SSH connections, or add a machine yourself.'}</p></div> : visibleHosts.map((host) => <MachineCard key={host.id} host={host} selected={selectedHost === host.id} onSelect={() => { setSelectedHost(host.id); openQuick(host.id); }} batchSelected={selectedHostIds.includes(host.id)} batchDisabled={sending || settingUpAccess || tunnelBusy || (!selectedHostIds.includes(host.id) && (host.status !== 'ready' || selectedHostIds.length >= 20))} onBatch={() => toggleBatchHost(host)} onAccess={() => openAccess(host)} onViewForwards={() => openTunnels(host.id, 'local', 'active')} onMenu={event => showMachineMenu(event,host)} menuOpen={machineMenu?.hostId === host.id} dropState={dragHost === host.id ? host.status === 'ready' ? 'drop-ready' : 'drop-blocked' : ''} dropHandlers={{
             onDragEnter: event => { event.preventDefault(); setDragHost(host.id); },
             onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setDragHost(''); },
             onDragOver: event => { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = host.status === 'ready' && !sending && !settingUpAccess && !tunnelBusy ? 'copy' : 'none'; setDragHost(host.id); },
             onDrop: event => dropHost(event,host),
           }} dragging={dragging} blocked={settingUpAccess || sending || !!busy} viewMode={state.settings?.viewMode || 'expanded'} bridge={bridge} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} operationLocked={operationLocked} quickOpen={quickHost?.id === host.id} quickMode={quickPreferences[host.id]?.mode || 'local'} quickAdvanced={quickPreferences[host.id]?.advanced || false} quickRevision={quickPreferences[host.id]?.revision || 0} onQuickOpen={() => openQuick(host.id)} onQuickClose={closeQuick} receipts={state.history.filter(entry => entry.hostId === host.id)} items={state.items} />)}</div>
-          <div className="machine-pane-bottom"><button className="add-machine" disabled={settingUpAccess || sending} onClick={() => openHost()}><Plus size={15} /> Add a machine <span>manually</span></button><div className="discovery-actions"><button disabled={!!busy} onClick={() => action('refreshHosts')}><RefreshCw size={12} className={busy === 'refreshHosts' ? 'spinning' : ''} /> Import / refresh</button><button disabled={!!busy} onClick={() => action('probeHosts')}><CheckCheck size={13} className={busy === 'probeHosts' ? 'spinning' : ''} /> Check SSH</button></div></div>
+          <div className="machine-pane-bottom"><button className="add-machine" disabled={settingUpAccess || sending} onClick={() => openHost()}><Plus size={15} /> Add a machine <span>manually</span></button><div className="discovery-actions"><button disabled={!!busy} onClick={() => action('refreshHosts')}><RefreshCw size={12} className={busy === 'refreshHosts' ? 'spinning' : ''} /> Import / refresh</button><button title="Check all machines using their saved SSH access, including saved passwords" disabled={!!busy} onClick={() => action('probeHosts')}><CheckCheck size={13} className={busy === 'probeHosts' ? 'spinning' : ''} /> Check SSH</button></div></div>
         </aside>}
       </main>
 
@@ -552,8 +588,9 @@ function App() {
         {state.environment?.platform === 'darwin' && <button role="menuitem" onClick={() => { if (operationLocked()) return; setInstallHostId(machineMenu.hostId); setQuickHost(null); setMachineMenu(null); setModal('install'); }}><Download size={15} /><span><strong>Install on this device…</strong></span></button>}
         <button role="menuitem" className="danger-button" onClick={async () => { if (!removeArmed) { setRemoveArmed(true); return; } const id = machineMenu.hostId; setMachineMenu(null); await action('removeHost', id, 'Machine removed.'); }}><Trash2 size={15} /><span><strong>{removeArmed ? 'Confirm remove machine' : 'Remove machine…'}</strong></span></button>
       </div>}
-      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}><section className={`modal ${modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' || modal === 'install' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-        <div className="modal-header"><h2 id="modal-title">{modal === 'updates' ? 'Updates' : modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on this device' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy || macInstallBusy || updateBusy} onClick={closeModal}><X size={17} /></button></div>
+      {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); }}><section className={`modal ${modal === 'onboarding' ? 'onboarding-modal' : modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' || modal === 'install' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby={modal === 'onboarding' ? 'onboarding-progress' : undefined} ref={modalRef}>
+        <div className="modal-header"><h2 id="modal-title">{modalTitle}</h2><button className="icon-button" aria-label="Close dialog" disabled={modal !== 'onboarding' && (settingUpAccess || tunnelBusy || macInstallBusy || updateBusy)} onClick={closeModal}><X size={17} /></button></div>
+        {modal === 'onboarding' && <OnboardingPanel productName={productName} mode={onboardingMode} step={onboardingStep} onStep={setOnboardingStep} onMode={setOnboardingMode} onFinish={finishOnboarding} onSkip={closeModal} onNavigate={navigateFromOnboarding} wayland={Boolean(state.environment?.wayland)} shortcutAvailable={state.environment?.shortcutAvailable !== false} />}
         {modal === 'tunnels' && <TunnelPanel key={`${tunnelEntry.hostId}-${tunnelEntry.mode}-${tunnelEntry.tab}`} bridge={bridge} host={state.hosts.find((host) => host.id === tunnelEntry.hostId)} initialMode={tunnelEntry.mode} initialTab={tunnelEntry.tab} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} onClose={closeModal} blocked={settingUpAccess || sending} />}
         {modal === 'updates' && <UpdatesPanel bridge={bridge} onClose={closeModal} onBusyChange={setUpdateOperation} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || dragging || tunnels.active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))} />}
         {modal === 'install' && <MacInstallPanel key={installHostId} bridge={bridge} hosts={state.hosts} initialHostId={installHostId} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy} />}
@@ -599,6 +636,8 @@ function App() {
           {state.environment?.sshAvailable === false && <p className="settings-warning"><CircleAlert size={15} />SSH is missing on this device. Install the OpenSSH client to enable transfers.</p>}
           {warnings.length > 0 && <div className="discovery-warnings"><strong>Discovery notices</strong>{warnings.map((warning, index) => <p key={index}>{typeof warning === 'string' ? warning : warning.message || JSON.stringify(warning)}</p>)}</div>}
           <div className="setting-row"><div><strong>Name this device</strong><p>Optional name shown on new arrivals sent from here. Leave blank to use “Another computer”.</p></div></div><form className="device-name-setting" onSubmit={async event => { event.preventDefault(); if (await action('updateSettings', { deviceName: deviceNameDraft })) noticeNow('Device name saved. Future transfers will use it.'); }}><input aria-label="This device’s name" maxLength={64} placeholder="For example, Work laptop" value={deviceNameDraft} onChange={event => setDeviceNameDraft(event.target.value)} /><button className="quiet-button" disabled={!!busy} type="submit">Save name</button></form>
+          <div className="setting-row"><div><strong>Quick start</strong><p>Replay the short introduction. It only explains {productName} and does not change settings.</p></div><button type="button" className="quiet-button" aria-label="Replay quick start" onClick={replayQuickStart}>Replay</button></div>
+          <div className="setting-row"><div><strong>Feature guide</strong><p>Two or three steps for each part of {productName}, whenever you want them.</p></div><button type="button" className="quiet-button" aria-label="Open feature guide" onClick={openFeatureGuide}>Open</button></div>
           <div className="setting-row"><div><strong>Updates</strong><p>Check releases, choose automatic checks, and download a verified update. Restart only when you are ready.</p></div><button className="quiet-button" onClick={() => setModal('updates')}><Download size={14} /> {state.updatesSummary?.downloadedVersion ? 'Update ready' : state.updatesSummary?.availableVersion ? 'Update available' : 'Manage updates'}</button></div>
           <div className="configuration-panel"><strong>Take your setup with you.</strong><p>Export machine names, routes, and preferences for another device. Passwords, private keys, and shelf or clipboard content are excluded. The new device still needs its own SSH access.</p><div className="configuration-actions"><button className="quiet-button" disabled={!!busy} onClick={async () => { if (await action('exportConfig')) noticeNow('Configuration exported.'); }}><Download size={13} /> Export configuration</button><button className="quiet-button" disabled={!!busy} onClick={async () => { if (await action('importConfig')) noticeNow('Configuration imported. Check SSH before sending.'); }}><Upload size={13} /> Import configuration</button></div></div>
           <div className="modal-actions"><button className="text-button" onClick={() => action('openSettingsFolder')}>Open settings folder <ArrowUpRight size={12} /></button><button className="quiet-button" onClick={() => isDemo ? noticeNow('Quit is available in the desktop app.') : bridge.quit()}>Quit {productName}</button></div>

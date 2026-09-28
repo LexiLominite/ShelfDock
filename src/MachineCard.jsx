@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { Globe, ChevronDown, KeyRound, MoreHorizontal, Folder, Square, X, Check } from 'lucide-react';
 import QuickConnect from './QuickConnect';
-import { latestSavedPlan, repeatSavedForward, stopForward } from './quick-connect.mjs';
+import { latestWebsitePlan, repeatSavedForward, stopForward } from './quick-connect.mjs';
 
 const statusLabel = status => ({ready:'Ready',checking:'Checking',offline:'Offline','auth-required':'Needs access',unknown:'Unchecked'})[status] || 'Unchecked';
 const routeLabel = route => ({tailscale:'Tailscale',lan:'LAN',ssh:'SSH'})[route] || 'SSH';
@@ -19,7 +19,7 @@ export default function MachineCard({ host, selected, batchSelected, batchDisabl
   useEffect(() => { setDetailsOpen(false); }, [viewMode]);
   const active = snapshot.active.filter(entry => entry.hostId === host.id && ['starting','running'].includes(entry.status));
   const localActive = active.find(entry => entry.mode === 'local');
-  const saved = latestSavedPlan(snapshot, host.id, 'local');
+  const saved = latestWebsitePlan(snapshot, host.id);
   const metadata = `${host.user ? `${host.user}@` : ''}${host.address}:${host.port || 22} · ${routeLabel(host.route)} · ${host.destination || '~/Desktop'} · ${statusLabel(host.status)}`;
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => {

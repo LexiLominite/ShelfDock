@@ -20,7 +20,7 @@ Before uploading a new release, scan the final source commit, new screenshots an
 4. Keep Clipboard tools disabled by default and recording a separate opt-in. Disabling tools stops capture while preserving saved entries; re-enabling leaves recording off. Hiding the tab explains that previously enabled history may continue. Consent and history stay out of configuration exports.
 5. Verify Sent and Received history against its actual receipt/discovery scope. Do not imply it inventories every transfer performed by unrelated applications or that a history record grants consent to resend.
 6. Verify update checks, asset selection, checksums, interrupted downloads and recovery. Installation requires an explicit Restart and install and a supported writable clean installation. Private LexBridge builds must not query or install the public clean edition. Their optional private checks use an existing authenticated GitHub CLI session without storing a token; explain missing CLI/sign-in prerequisites and preserve manual private downloads.
-7. Review the landing page claims and version against the released build. Its example is fictional and performs no clipboard reads, uploads or analytics. See [website notes](site/README.md); adding its files does not host it or choose a domain.
+7. Review the landing page claims and version against the released build. Its example is fictional and performs no clipboard reads, uploads or analytics. See [website notes](site/README.md); the workflow publishes only `site/` to GitHub Pages at `shelfdock.lexilominite.com`. Verify HTTPS and deployed metadata after the workflow completes.
 
 ## Work before a production release
 

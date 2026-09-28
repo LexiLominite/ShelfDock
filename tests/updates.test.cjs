@@ -235,9 +235,64 @@ test('portable apply helper rolls back an unlaunchable staged app without removi
   const value = await helperFixture(t, { invalidExecutable: true }); assert.equal(await value.done, 1);
   assert.equal(JSON.parse(await fs.readFile(value.result, 'utf8')).status, 'rolled_back'); assert.match(await fs.readFile(path.join(value.target, 'ShelfDock'), 'utf8'), /old-launched/);
 });
-test('install refuses a changed verified package before creating a helper or quitting', async t => {
-  let quit = false; const { manager } = await fixture(t, { identify: async () => ({ available: true, target: '/unused/test-app', identity: '1:2' }), quit: async () => { quit = true; } });
-  await manager.check(); await manager.download(); await fs.writeFile(manager.downloaded.file, 'changed'); await assert.rejects(manager.install(), /changed/); assert.equal(quit, false); assert.equal(manager.state.status, 'downloaded');
+for (const action of ['revealDownload', 'install']) for (const damage of ['changed', 'missing']) {
+  test(`${action} invalidates a ${damage} package and permits only a verified retry`, async t => {
+    const candidate = release(), overrides = {}, transport = fixtureStream([candidate], overrides), events = [];
+    let revealed = 0, spawned = 0, quit = 0;
+    const { manager } = await fixture(t, { stream: transport.stream, onChange: state => events.push(state), identify: async () => ({ available: true, target: '/unused/test-app', identity: '1:2' }), revealFile: () => revealed++, spawnProcess: () => spawned++, quit: async () => quit++ });
+    await manager.check(); await manager.download(); const file = manager.downloaded.file, journal = path.join(manager.directory, 'download.json');
+    // Equal size ensures changed content is detected by hashing, not just a length check.
+    if (damage === 'changed') await fs.writeFile(file, Buffer.alloc(data.length, 42)); else await fs.unlink(file);
+    await assert.rejects(manager[action](), /missing or changed.*Download it again/);
+    const state = manager.snapshot(); assert.equal(state.status, 'available'); assert.equal(state.downloaded, null); assert.equal(state.canInstall, false); assert.equal(state.canDownload, true); assert.equal(state.progress, null); assert.equal(state.release.version, '0.6.0');
+    assert.equal(events.at(-1).status, 'available'); assert.equal(events.at(-1).downloaded, null);
+    assert.equal(revealed, 0); assert.equal(spawned, 0); assert.equal(quit, 0);
+    await assert.rejects(fs.lstat(file), { code: 'ENOENT' }); await assert.rejects(fs.lstat(journal), { code: 'ENOENT' });
+    overrides[candidate.assets[0].browser_download_url] = Buffer.alloc(data.length, 42);
+    const rejected = await manager.download(); assert.equal(rejected.downloaded, null); assert.match(rejected.error, /SHA-256/);
+    delete overrides[candidate.assets[0].browser_download_url];
+    const retried = await manager.download(); assert.equal(retried.status, 'downloaded'); assert.equal(retried.error, ''); assert.equal(retried.downloaded.sha256, digest(data)); assert.deepEqual(await fs.readFile(manager.downloaded.file), data);
+    assert.equal(JSON.parse(await fs.readFile(journal, 'utf8')).sha256, digest(data));
+    assert.equal(transport.calls.filter(url => url.endsWith('SHA256SUMS.txt')).length, 3);
+    assert.equal(transport.calls.filter(url => url.endsWith('.tar.gz')).length, 3);
+  });
+}
+for (const action of ['revealDownload', 'install']) {
+  test(`${action} removes cache symlinks without following package or journal targets`, async t => {
+    const { manager, directory } = await fixture(t, { identify: async () => ({ available: true, target: '/unused/test-app', identity: '1:2' }) });
+    await manager.check(); await manager.download();
+    const file = manager.downloaded.file, journal = path.join(manager.directory, 'download.json'), outside = path.join(directory, 'outside-package'), outsideJournal = path.join(directory, 'outside-journal');
+    await fs.writeFile(outside, data); await fs.writeFile(outsideJournal, 'retained record');
+    await fs.unlink(file); await fs.symlink(outside, file); await fs.unlink(journal); await fs.symlink(outsideJournal, journal);
+    await assert.rejects(manager[action](), /missing or changed/);
+    assert.deepEqual(await fs.readFile(outside), data); assert.equal(await fs.readFile(outsideJournal, 'utf8'), 'retained record');
+    await assert.rejects(fs.lstat(file), { code: 'ENOENT' }); await assert.rejects(fs.lstat(journal), { code: 'ENOENT' });
+    assert.equal((await manager.download()).status, 'downloaded'); assert.equal((await fs.lstat(manager.downloaded.file)).isSymbolicLink(), false);
+  });
+  test(`${action} invalidation never deletes a metadata path outside the owned cache`, async t => {
+    const { manager, directory } = await fixture(t, { identify: async () => ({ available: true, target: '/unused/test-app', identity: '1:2' }) });
+    await manager.check(); await manager.download(); const outside = path.join(directory, manager.downloaded.name); await fs.writeFile(outside, data); manager.downloaded.file = outside;
+    await assert.rejects(manager[action](), /missing or changed/);
+    assert.deepEqual(await fs.readFile(outside), data); assert.equal(manager.snapshot().downloaded, null); await assert.rejects(fs.lstat(path.join(manager.directory, 'download.json')), { code: 'ENOENT' });
+    assert.equal((await manager.download()).status, 'downloaded');
+  });
+  test(`${action} invalidates a restored cache and allows retry after refreshing release metadata`, async t => {
+    const { manager, directory, stream } = await fixture(t); await manager.check(); await manager.download(); await manager.shutdown();
+    const restored = new UpdateManager({ dataDir: directory, version: '0.5.0', platform: 'linux', arch: 'x64', stream, identify: async () => ({ available: true, target: '/unused/test-app', identity: '1:2' }) });
+    await restored.initialized; t.after(() => restored.shutdown()); assert.equal(restored.snapshot().status, 'downloaded'); await fs.unlink(restored.downloaded.file);
+    await assert.rejects(restored[action](), /Check for updates, then download it again/); assert.equal(restored.snapshot().status, 'available'); assert.equal(restored.snapshot().downloaded, null);
+    await restored.check(); assert.equal(restored.snapshot().canDownload, true); const retry = await restored.download(); assert.equal(retry.status, 'downloaded'); assert.equal(retry.downloaded.sha256, digest(data));
+  });
+}
+test('cache invalidation and retry do not follow a replaced cache directory', async t => {
+  const { manager, directory, calls } = await fixture(t); await manager.check(); await manager.download();
+  const outside = path.join(directory, 'outside-cache'), previous = path.join(directory, 'original-cache'), name = manager.downloaded.name;
+  await fs.mkdir(outside); await fs.writeFile(path.join(outside, name), data); await fs.writeFile(path.join(outside, 'download.json'), 'retained record');
+  await fs.rename(manager.directory, previous); await fs.symlink(outside, manager.directory);
+  await assert.rejects(manager.revealDownload(), /missing or changed/); assert.equal(manager.snapshot().downloaded, null);
+  await assert.rejects(manager.download(), /cache changed/); assert.equal(calls.length, 3);
+  assert.deepEqual(await fs.readFile(path.join(outside, name)), data); assert.equal(await fs.readFile(path.join(outside, 'download.json'), 'utf8'), 'retained record');
+  assert.deepEqual(await fs.readFile(path.join(previous, name)), data); await fs.access(path.join(previous, 'download.json'));
 });
 test('Windows helper uses literal paths, old/new hashes, process wait and rollback without changing execution policy', () => {
   assert.match(WINDOWS_HELPER, /Get-FileHash -LiteralPath \$p.target/); assert.match(WINDOWS_HELPER, /Get-FileHash -LiteralPath \$p.staged/);

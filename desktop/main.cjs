@@ -14,7 +14,7 @@ const { TunnelManager } = require('./tunnels.cjs');
 const { MacInstaller } = require('./mac-installer.cjs');
 const { ReceivedManager } = require('./received.cjs');
 const { UpdateManager } = require('./updates.cjs');
-const { tunnelSiteURL, assertTunnelSiteEndpoint } = require('./tunnel-site.cjs');
+const { tunnelSiteURL, assertTunnelSiteEndpoint, verifyTunnelSite } = require('./tunnel-site.cjs');
 
 const { productName = 'ShelfDock', version } = require('../package.json');
 // Retain the existing data directory and singleton identity across editions.
@@ -93,6 +93,7 @@ function safeHandler(method, fn) {
     if (service?.appUpdating && !['getState', 'getUpdates', 'hideWindow', 'setInteraction'].includes(method)) throw new Error('Wait for the app update to finish.');
     if (service?.authenticationSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for connection setup to finish.');
     if (service?.configurationImport && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
+    if (service?.configurationSaving && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for machine settings to finish saving.');
     if (service?.tunnelSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for forwarding setup to finish.');
     if (service?.macInstallation && !['getState', 'getTunnels', 'getMacInstallState', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for Mac installation to finish.');
     return fn(...args);
@@ -110,7 +111,7 @@ if (singleton) app.whenReady().then(async () => {
   await clipboardHistory.initialized;
   service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish, safeStorage });
   await service.getState();
-  if (app.isPackaged) {
+  if (app.isPackaged && ['LexBridge', 'lex-drift'].includes(productName)) {
     try {
     const preset = path.join(process.resourcesPath, 'personal-config.json');
     const marker = path.join(app.getPath('userData'), 'personal-preset-v1-applied');
@@ -132,7 +133,7 @@ if (singleton) app.whenReady().then(async () => {
   macInstaller = new MacInstaller({ service, sourceApp: process.platform === 'darwin' && app.isPackaged ? path.resolve(path.dirname(process.execPath), '../..') : null, platform: process.platform, arch: process.arch, version, productName, isPackaged: app.isPackaged, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:mac-install', state); } });
   received = new ReceivedManager({ dataDir: app.getPath('userData'), desktopDir: app.getPath('desktop'), service, enabled: !backgroundTest, openPath: folder => shell.openPath(folder), onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:received', state); } });
   await received.initialized;
-  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.tunnelSetup || service.macInstallation || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
+  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.configurationSaving || service.tunnelSetup || service.macInstallation || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
   await updates.initialized;
   const initial = await service.getState();
   runtimeSettings = initial.settings;
@@ -169,7 +170,20 @@ if (singleton) app.whenReady().then(async () => {
     const url = tunnelSiteURL(request, tunnels.snapshot());
     const record = tunnels.active.get(request.id);
     assertTunnelSiteEndpoint(record, state.hosts.find(host => host.id === record?.view.hostId));
+    await verifyTunnelSite(url, record);
+    // A Stop or host edit while the bounded probe runs must prevent a late open.
+    const latest = await service.getState();
+    tunnelSiteURL(request, tunnels.snapshot());
+    assertTunnelSiteEndpoint(tunnels.active.get(request.id), latest.hosts.find(host => host.id === record.view.hostId));
     await shell.openExternal(url);
+    return { url };
+  });
+  safeHandler('copyTunnelSite', async request => {
+    const state = await service.getState();
+    const url = tunnelSiteURL(request, tunnels.snapshot());
+    const record = tunnels.active.get(request.id);
+    assertTunnelSiteEndpoint(record, state.hosts.find(host => host.id === record?.view.hostId));
+    clipboard.writeText(url);
     return { url };
   });
   safeHandler('pickFiles', async () => {
@@ -208,7 +222,7 @@ if (singleton) app.whenReady().then(async () => {
   tray = new Tray(trayIcon);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Show ${productName}`, click: () => reveal('tray') },
-    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
+    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
     { type: 'separator' },
     { label: `Quit ${productName}`, click: () => { quitting = true; app.quit(); } },
   ]));
@@ -225,7 +239,7 @@ if (singleton) app.whenReady().then(async () => {
   await window.loadFile(entry);
   if (!startHidden) reveal('launch');
   publish(await service.getState());
-  service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
+  service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   // Poll position only: never install keyboard/mouse hooks or record cursor history on disk.
   if (!backgroundTest && !(process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY))) {
     poll = setInterval(() => {
@@ -237,9 +251,9 @@ if (singleton) app.whenReady().then(async () => {
   if (!backgroundTest) clipboardTimer = setInterval(() => clipboardHistory.tick().catch(() => {}), 1500);
   refreshTimer = setInterval(async () => {
     const state = await service.getState();
-    if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return;
+    if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return;
     if (state.history.some(receipt => receipt.status === 'sending')) return;
-    service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
+    service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   }, 90000);
 }).catch(error => {
   console.error(error);

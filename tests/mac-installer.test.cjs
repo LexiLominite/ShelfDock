@@ -142,7 +142,7 @@ test('concurrent operations are refused and shutdown waits for the active operat
 
 test('transfers, authentication, configuration, forwarding setup, and discovery block installation work', mac, async t => {
   const f = await fixture(t);
-  for (const field of ['transferring', 'authenticationSetup', 'configurationImport', 'tunnelSetup', 'scanPromise', 'probePromise', 'macInstallation']) { f.service[field] = true; assert.throws(() => f.installer.preview({ hostId: f.host.id }), /Wait/); f.service[field] = false; }
+  for (const field of ['transferring', 'authenticationSetup', 'configurationImport', 'configurationSaving', 'tunnelSetup', 'scanPromise', 'probePromise', 'macInstallation']) { f.service[field] = true; assert.throws(() => f.installer.preview({ hostId: f.host.id }), /Wait/); f.service[field] = false; }
   assert.equal(f.calls.length, 0);
 });
 

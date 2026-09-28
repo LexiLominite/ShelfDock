@@ -164,6 +164,7 @@ class UpdateManager {
     await ensurePrivateDirectory(this.baseDirectory);
     await ensurePrivateDirectory(this.directory);
     this.directory = await fs.realpath(this.directory); this.file = path.join(this.directory, 'preferences.json');
+    const cacheStat = await fs.lstat(this.directory); this.cacheIdentity = { dev: cacheStat.dev, ino: cacheStat.ino };
     try {
       const stat = await fs.lstat(this.file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8192) throw new Error('Invalid updater preferences.');
       const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
@@ -253,12 +254,42 @@ class UpdateManager {
     this.emit(); this.schedule(); return this.snapshot();
   }
   async forgetDownload() {
-    if (this.downloaded) await fs.rm(this.downloaded.file, { force: true }); this.downloaded = null; await fs.rm(path.join(this.directory, 'download.json'), { force: true });
+    const downloaded = this.downloaded; this.downloaded = null;
+    if (!await this.ownsCache()) return;
+    const unlink = file => fs.unlink(file).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    // Remove only this cache's journal and exact package path; unlink never follows a package or journal symlink.
+    await unlink(path.join(this.directory, 'download.json'));
+    const name = downloaded && assetName(downloaded.version, this.platform, this.arch, this.personal);
+    if (name && downloaded.name === name && downloaded.file === path.join(this.directory, name)) await unlink(downloaded.file);
+  }
+  async ownsCache() {
+    try {
+      const stat = await fs.lstat(this.directory);
+      return stat.isDirectory() && !stat.isSymbolicLink() && stat.dev === this.cacheIdentity?.dev && stat.ino === this.cacheIdentity?.ino && await fs.realpath(this.directory) === this.directory;
+    } catch { return false; }
+  }
+  async verifyDownload() {
+    const downloaded = this.downloaded;
+    try {
+      const name = assetName(downloaded.version, this.platform, this.arch, this.personal);
+      if (!name || downloaded.name !== name || downloaded.file !== path.join(this.directory, name) || !await this.ownsCache()) throw new Error();
+      const stat = await fs.lstat(downloaded.file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== downloaded.size || await hashFile(downloaded.file) !== downloaded.sha256 || compareVersions(downloaded.version, this.version) <= 0) throw new Error();
+      return downloaded;
+    } catch {
+      // Invalidate memory even if a missing or unwritable cache prevents journal cleanup.
+      await this.forgetDownload().catch(() => {});
+      const retry = this.release?.asset && this.release?.checksumAsset ? 'Download it again.' : 'Check for updates, then download it again.';
+      const error = new Error('The downloaded update is missing or changed. ' + retry);
+      this.state.status = this.release ? 'available' : 'idle'; this.state.progress = null; this.state.error = error.message; this.emit();
+      throw error;
+    }
   }
   async download() {
     await this.initialized;
     if (!this.release?.asset || !this.release?.checksumAsset) throw new Error('This release does not have a verified package for your device.');
     if (this.downloaded) return this.snapshot();
+    if (!await this.ownsCache()) throw new Error('The update cache changed. Restart the app before downloading again.');
     const release = clone(this.release), controller = this.begin('downloading'); const part = path.join(this.directory, 'download-' + crypto.randomUUID() + '.part'); let promoted; const deadline = setTimeout(() => controller.abort(new Error('The update download timed out.')), 20 * 60 * 1000); deadline.unref?.();
     try {
       const manifest = await fetchBuffer(release.checksumAsset.url, { limit: 128 * 1024, signal: controller.signal, stream: this.stream });
@@ -285,8 +316,8 @@ class UpdateManager {
   async cancel() { await this.initialized; if (['checking', 'downloading'].includes(this.state.status)) this.controller?.abort(); return this.snapshot(); }
   async revealDownload() {
     await this.initialized; if (!this.downloaded) throw new Error('Download the update first.');
-    const stat = await fs.lstat(this.downloaded.file); if (!stat.isFile() || stat.isSymbolicLink() || await hashFile(this.downloaded.file) !== this.downloaded.sha256) throw new Error('The downloaded update changed. Download it again.');
-    this.revealFile(this.downloaded.file); return this.snapshot();
+    const downloaded = await this.verifyDownload();
+    this.revealFile(downloaded.file); return this.snapshot();
   }
   async openRelease() { await this.initialized; if (!this.enabled) throw new Error('Updates are disabled in background test mode.'); await this.openExternal(this.personal ? PRIVATE_RELEASES_URL : this.release?.url || RELEASES_URL); return this.snapshot(); }
   assertIdle() { const busy = this.isBusy(); if (busy) throw new Error(typeof busy === 'string' ? busy : 'Finish transfers, stop live forwards and close active setup before restarting to update.'); }
@@ -295,8 +326,7 @@ class UpdateManager {
     this.state.installation = await this.identify(this); if (!this.state.installation.available) throw new Error(this.state.installation.reason);
     const controller = this.begin('preparing'); const downloaded = this.downloaded, installation = this.state.installation; let staging, helper;
     try {
-      const stat = await fs.lstat(downloaded.file);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== downloaded.size || await hashFile(downloaded.file) !== downloaded.sha256 || compareVersions(downloaded.version, this.version) <= 0) throw new Error('The verified update changed. Download it again.');
+      await this.verifyDownload();
       const id = crypto.randomUUID(), parent = path.dirname(installation.target); staging = path.join(parent, '.shelfdock-update-' + id); let staged;
       if (this.platform === 'win32') { await fs.mkdir(staging, { mode: 0o700 }); staged = path.join(staging, this.edition.productName + '.exe'); await fs.copyFile(downloaded.file, staged, require('node:fs').constants.COPYFILE_EXCL); }
       else {
@@ -325,7 +355,7 @@ class UpdateManager {
     } catch (error) {
       helper?.kill();
       if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
-      this.state.status = 'downloaded'; this.state.error = safeMessage(error); this.emit(); throw error;
+      this.state.status = this.downloaded ? 'downloaded' : this.release ? 'available' : 'idle'; this.state.error = safeMessage(error); this.emit(); throw error;
     } finally { if (this.controller === controller) this.controller = null; }
   }
   schedule() {

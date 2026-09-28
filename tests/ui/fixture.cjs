@@ -1,6 +1,15 @@
 'use strict';
 // Every value is fictional. This bridge cannot access the native clipboard or SSH.
-module.exports = function installFixture({ mode = 'expanded', entries = 35, hosts = 12, clipboardToolsEnabled = true, clipboardTabVisible = true, platform = 'darwin', personalPreset = false } = {}) {
+module.exports = function installFixture({ mode = 'expanded', entries = 35, hosts = 12, clipboardToolsEnabled = true, clipboardTabVisible = true, platform = 'darwin', personalPreset = false, productName = 'ShelfDock', onboarding = 'completed' } = {}) {
+  const onboardingKey = 'lex-drift.onboarding.v1';
+  try {
+    if (onboarding === 'fresh') {
+      if (sessionStorage.getItem('lex-drift-onboarding-fresh-seeded') !== '1') {
+        localStorage.removeItem(onboardingKey);
+        sessionStorage.setItem('lex-drift-onboarding-fresh-seeded', '1');
+      }
+    } else if (onboarding !== 'preserve') localStorage.setItem(onboardingKey, JSON.stringify({ version: 1, status: 'completed' }));
+  } catch { /* The tutorial keeps an in-memory flag when storage is blocked. */ }
   const clone = value => structuredClone(value);
   const now = '2026-09-28T09:30:00.000Z';
   window.__calls = []; window.__listeners = {};
@@ -16,18 +25,18 @@ module.exports = function installFixture({ mode = 'expanded', entries = 35, host
   window.__setMode = value => {window.__state.settings.viewMode=value;emitState();};
   window.__publishTunnels=emitTunnels;
   window.__start = async request => {
-    const entry={...request,id:`active-${window.__calls.length}`,hostName:window.__state.hosts.find(h=>h.id===request.hostId)?.name,status:'starting',startedAt:now};
+    const entry={...request,...(request.autoListen&&window.__autoListenPort?{listenPort:window.__autoListenPort}:{}),id:`active-${window.__calls.length}`,hostName:window.__state.hosts.find(h=>h.id===request.hostId)?.name,status:'starting',startedAt:now};
     window.__tunnels.active.push(entry);emitTunnels();
     const finish=()=>{
       if(window.__failStart){entry.status='failed';entry.error='This listening port is already in use. Choose another port.';window.__failStart=false;}
       else entry.status='running';
-      if(request.remember){const plan={...request,id:`plan-${window.__calls.length}`,hostName:entry.hostName,lastUsedAt:now};window.__tunnels.history.unshift(plan);entry.historyId=plan.id;}
+      if(request.remember){const plan={...request,listenPort:entry.listenPort,id:`plan-${window.__calls.length}`,hostName:entry.hostName,lastUsedAt:now};window.__tunnels.history.unshift(plan);entry.historyId=plan.id;}
       emitTunnels();return clone(window.__tunnels);
     };
     if(window.__deferStart)return new Promise(resolve=>{window.__finishStart=()=>resolve(finish());window.__finishStale=()=>resolve({active:[{...entry,status:'running'}],history:clone(window.__tunnels.history)});});
     return finish();
   };
-  window.drift={productName:'ShelfDock',getState:call('getState'),onState:subscribe('state'),onReveal:()=>()=>{},setInteraction:call('setInteraction',()=>({})),hideWindow:call('hideWindow',()=>({})),
+  window.drift={productName,getState:call('getState'),onState:subscribe('state'),onReveal:()=>()=>{},setInteraction:call('setInteraction',()=>({})),hideWindow:call('hideWindow',()=>({})),
     getReceived:call('getReceived',()=>clone(window.__received)),onReceived:subscribe('received'),refreshReceived:call('refreshReceived',()=>clone(window.__received)),markReceivedRead:call('markReceivedRead',({id,all})=>{for(const entry of window.__received.received)if(all||entry.id===id)entry.unread=false;window.__received.unreadCount=window.__received.received.filter(e=>e.unread).length;window.__listeners.received?.(clone(window.__received));return clone(window.__received);}),openReceivedFolder:call('openReceivedFolder',()=>clone(window.__received)),addReceivedToShelf:call('addReceivedToShelf',({id,names})=>{const entry=window.__received.received.find(e=>e.id===id);const added=entry.items.filter(item=>names.includes(item.name)).map((item,i)=>({...item,id:'received-'+i}));window.__state.items.push(...added);emitState();return {...clone(window.__state),enqueuedItemIds:added.map(e=>e.id)};}),
     updateClipboardTools:call('updateClipboardTools',patch=>{Object.assign(window.__state.clipboardTools,patch);if(patch.enabled===false){window.__clips.settings.enabled=false;window.__state.clipboardTools.historyEnabled=false;}emitState();return clone(window.__state);}),
     updateSettings:call('updateSettings',patch=>{Object.assign(window.__state.settings,patch);emitState();return clone(window.__state);}),
@@ -43,6 +52,6 @@ module.exports = function installFixture({ mode = 'expanded', entries = 35, host
     getMacInstallState:call('getMacInstallState',()=>({available:platform==='darwin',operation:null})),onMacInstallState:subscribe('macInstall'),
     previewMacInstall:call('previewMacInstall',({hostId})=>{if(window.__macPreviewError)throw new Error(window.__macPreviewError);const host=window.__state.hosts.find(h=>h.id===hostId);return {id:'fixture-plan',hostId,hostName:host.name,address:host.address,user:host.user,destination:'/Users/demo/Applications/ShelfDock.app',architecture:'arm64',version:'0.4.1',productName:'ShelfDock',includesPersonalPreset:personalPreset,canInstall:!window.__macExisting,reason:window.__macExisting?'An app already exists at this destination.':''};}),
     installOnMac:call('installOnMac',request=>new Promise(resolve=>{window.__finishMacInstall=(status='installed')=>{const next={available:true,operation:{status,hostName:'Studio',destination:'/Users/demo/Applications/ShelfDock.app',message:status==='failed'?'Upload could not be verified.':'Installed.'}};window.__listeners.macInstall?.(clone(next));resolve(next);};})),
-    getTunnels:call('getTunnels',()=>clone(window.__tunnels)),onTunnels:subscribe('tunnels'),startTunnel:call('startTunnel',window.__start),restartTunnel:call('restartTunnel',id=>window.__start({...window.__tunnels.history.find(p=>p.id===id),remember:true})),stopTunnel:call('stopTunnel',id=>{window.__tunnels.active=window.__tunnels.active.filter(e=>e.id!==id);emitTunnels();return clone(window.__tunnels);}),openTunnelSite:call('openTunnelSite',({id,scheme,path})=>({url:`${scheme}//127.0.0.1:${window.__tunnels.active.find(e=>e.id===id).listenPort}${path}`})),updateTunnelNote:call('updateTunnelNote',({id,note})=>{window.__tunnels.history.find(p=>p.id===id).note=note;return clone(window.__tunnels);}),removeTunnelHistory:call('removeTunnelHistory',id=>{window.__tunnels.history=window.__tunnels.history.filter(p=>p.id!==id);return clone(window.__tunnels);}),
+    getTunnels:call('getTunnels',()=>clone(window.__tunnels)),onTunnels:subscribe('tunnels'),startTunnel:call('startTunnel',window.__start),restartTunnel:call('restartTunnel',id=>window.__start({...window.__tunnels.history.find(p=>p.id===id),remember:true})),stopTunnel:call('stopTunnel',id=>{window.__tunnels.active=window.__tunnels.active.filter(e=>e.id!==id);emitTunnels();return clone(window.__tunnels);}),copyTunnelSite:call('copyTunnelSite',({id,scheme,path})=>({url:`${scheme}//127.0.0.1:${window.__tunnels.active.find(e=>e.id===id).listenPort}${path}`})),openTunnelSite:call('openTunnelSite',({id,scheme,path})=>({url:`${scheme}//127.0.0.1:${window.__tunnels.active.find(e=>e.id===id).listenPort}${path}`})),updateTunnelNote:call('updateTunnelNote',({id,note})=>{window.__tunnels.history.find(p=>p.id===id).note=note;return clone(window.__tunnels);}),removeTunnelHistory:call('removeTunnelHistory',id=>{window.__tunnels.history=window.__tunnels.history.filter(p=>p.id!==id);return clone(window.__tunnels);}),
   };
 };

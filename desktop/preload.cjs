@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('drift', {
   getTunnels: () => invoke('getTunnels'),
   startTunnel: request => invoke('startTunnel', request),
   openTunnelSite: request => invoke('openTunnelSite', request),
+  copyTunnelSite: request => invoke('copyTunnelSite', request),
   stopTunnel: id => invoke('stopTunnel', id),
   restartTunnel: id => invoke('restartTunnel', id),
   removeTunnelHistory: id => invoke('removeTunnelHistory', id),

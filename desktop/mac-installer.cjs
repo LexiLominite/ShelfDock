@@ -167,7 +167,7 @@ class MacInstaller {
   emit() { try { this.onChange(this.getState()); } catch {} }
   assertIdle() {
     if (!this.capabilities().available) throw new Error(this.capabilities().reason);
-    if (this.task || this.service.macInstallation || this.service.transferring || this.service.authenticationSetup || this.service.configurationImport || this.service.tunnelSetup || this.service.scanPromise || this.service.probePromise) throw new Error('Wait for the current transfer, machine check, access setup, or installation to finish.');
+    if (this.task || this.service.macInstallation || this.service.transferring || this.service.authenticationSetup || this.service.configurationImport || this.service.configurationSaving || this.service.tunnelSetup || this.service.scanPromise || this.service.probePromise) throw new Error('Wait for the current transfer, machine check, settings save, access setup, or installation to finish.');
   }
   exclusive(work) {
     this.assertIdle(); this.service.macInstallation = true;

@@ -29,9 +29,10 @@
 .quick-notes summary { color:var(--muted); font-size:10px; cursor:pointer; padding:4px 0; }
 .quick-notes[open] summary { margin-bottom:6px; }
 .quick-note { margin:4px 0 0; color:var(--muted); font-size:10px; line-height:1.5; overflow-wrap:anywhere; }
-.quick-live-address { display:flex; align-items:center; gap:5px; margin-top:8px; color:var(--accent); min-width:0; }
+.quick-live-address { display:flex; flex-wrap:wrap; align-items:center; gap:5px; margin-top:8px; color:var(--accent); min-width:0; }
 .quick-live-address > svg { flex-shrink:0; }
-.quick-live-address input { color:var(--accent) !important; }
+.quick-connect .quick-live-address input { flex:1 1 164px; width:auto; min-width:164px; color:var(--accent) !important; }
+.quick-live-address > button { margin-left:auto; flex-shrink:0; }
 .quick-feedback { margin:8px 0 0; padding:7px 8px; border:1px solid var(--line-strong); border-radius:5px; color:var(--ink); line-height:1.5; overflow-wrap:anywhere; }
 .quick-connect.is-expanded { margin-top:8px; border-color:var(--line); }
 .quick-connect :disabled { opacity:.55; cursor:default; }

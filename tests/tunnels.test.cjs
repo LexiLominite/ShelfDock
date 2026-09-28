@@ -28,13 +28,15 @@ async function closedPort(port) {
   }
   assert.fail('Owned tunnel port remained open after stop');
 }
-async function fixture(t, { password = false, reportWildcard = false } = {}) {
+async function fixture(t, { password = false, reportWildcard = false, website = false, targetName = '127.0.0.1', destinationPort } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dropharbor-tunnel-test-'));
-  const serverKey = utils.generateKeyPairSync('ed25519'); const userKey = utils.generateKeyPairSync('ed25519');
+  const keyPair = () => { for (let attempt = 0; attempt < 10; attempt++) { const value = utils.generateKeyPairSync('ed25519'); if (!(utils.parseKey(value.private) instanceof Error)) return value; } throw new Error('Could not generate a valid ephemeral fixture key.'); };
+  const serverKey = keyPair(); const userKey = keyPair();
   const identity = path.join(directory, 'id_ed25519'); await fs.writeFile(identity, userKey.private, { mode: 0o600 });
   const authorized = utils.parseKey(userKey.public); const clients = new Set(); const sockets = new Set(); const remoteListeners = new Set();
   const track = socket => { sockets.add(socket); socket.on('error', () => {}); socket.once('close', () => sockets.delete(socket)); return socket; };
-  const echoServer = net.createServer(socket => { track(socket); socket.pipe(socket); }); const targetPort = await listen(echoServer);
+  const requestedTargets = []; const websiteRequests = [];
+  const echoServer = website ? require('node:http').createServer((request, response) => { websiteRequests.push({ method: request.method, url: request.url }); response.writeHead(404); response.end(); }) : net.createServer(socket => { track(socket); socket.pipe(socket); }); const targetPort = await listen(echoServer);
   const ssh = new Server({ hostKeys: [serverKey.private] }, client => {
     clients.add(client); client.on('error', () => {});
     const owned = new Map();
@@ -48,8 +50,9 @@ async function fixture(t, { password = false, reportWildcard = false } = {}) {
     });
     client.on('ready', () => {
       client.on('tcpip', (accept, reject, info) => {
-        if (info.destIP !== '127.0.0.1' || info.destPort !== targetPort) return reject();
-        const stream = accept(); const socket = track(net.connect({ host: info.destIP, port: info.destPort })); stream.on('error', () => socket.destroy()); stream.once('close', () => socket.destroy()); socket.pipe(stream); stream.pipe(socket);
+        requestedTargets.push({ host: info.destIP, port: info.destPort });
+        if (info.destIP !== targetName || info.destPort !== (destinationPort || targetPort)) return reject();
+        const stream = accept(); const socket = track(net.connect({ host: '127.0.0.1', port: targetPort })); stream.on('error', () => socket.destroy()); stream.once('close', () => socket.destroy()); socket.pipe(stream); stream.pipe(socket);
       });
       client.on('request', (accept, reject, name, info) => {
         if (name === 'cancel-tcpip-forward') { owned.get(info.bindPort)?.close(); owned.delete(info.bindPort); return accept?.(); }
@@ -83,14 +86,14 @@ async function fixture(t, { password = false, reportWildcard = false } = {}) {
   await auth.initialized; if (password) await auth.save(host, 'fixture-password');
   const service = { passwordAuth: auth, getState: async () => ({ hosts: [host] }), run, sshArgs: () => ['-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'UserKnownHostsFile=' + known, '-o', 'GlobalKnownHostsFile=/dev/null', '-p', String(sshPort), '-i', identity, 'fixture@127.0.0.1'] };
   const manager = new TunnelManager({ dataDir: path.join(directory, 'data'), service, startupTimeout: 7000 });
-  t.after(async () => { await manager.shutdown(); for (const socket of sockets) socket.destroy(); for (const client of clients) client.destroy(); for (const listener of remoteListeners) listener.close(); await new Promise(resolve => ssh.close(resolve)); await new Promise(resolve => echoServer.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
-  return { manager, service, host, directory, targetPort, calls, remoteListeners };
+  t.after(async () => { await manager.shutdown(); for (const socket of sockets) socket.destroy(); for (const client of clients) client.end(); for (const listener of remoteListeners) listener.close(); await new Promise(resolve => ssh.close(resolve)); await new Promise(resolve => echoServer.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
+  return { manager, service, host, directory, targetPort, calls, remoteListeners, requestedTargets, websiteRequests };
 }
 
 test('forwarding validates domains, ports, notes and mode without accepting shell-like input', () => {
   const valid = { mode: 'local', targetHost: 'example.invalid', targetPort: 443, listenPort: 8443, note: 'Development service', remember: true };
   assert.equal(validateTunnel(valid).targetPort, 443); assert.equal(validateTunnel({ ...valid, targetHost: '[::1]' }).targetHost, '::1');
-  for (const patch of [{ targetHost: '-oProxyCommand=bad' }, { targetHost: 'http://example.invalid' }, { targetHost: 'host;command' }, { listenPort: 0 }, { targetPort: 65536 }, { mode: 'dynamic' }, { note: 'x'.repeat(501) }, { remember: 'yes' }]) assert.throws(() => validateTunnel({ ...valid, ...patch }));
+  for (const patch of [{ targetHost: '-oProxyCommand=bad' }, { targetHost: 'http://example.invalid' }, { targetHost: 'host;command' }, { listenPort: 0 }, { targetPort: 65536 }, { mode: 'dynamic' }, { note: 'x'.repeat(501) }, { remember: 'yes' }, { autoListen: 'yes' }, { autoListen: true, mode: 'remote' }]) assert.throws(() => validateTunnel({ ...valid, ...patch }));
 });
 
 test('listener verification rejects wildcard, missing and unrecognized results', () => {
@@ -149,7 +152,7 @@ test('native route refuses inherited forwarding rules before it can create anoth
 
 test('configuration and credential setup prevent forwarding start', async t => {
   const { manager, service, targetPort } = await fixture(t);
-  for (const flag of ['authenticationSetup', 'configurationImport']) {
+  for (const flag of ['authenticationSetup', 'configurationImport', 'configurationSaving']) {
     service[flag] = true;
     await assert.rejects(manager.start({ hostId: 'fixture-host', mode: 'local', targetHost: '127.0.0.1', targetPort, listenPort: 54321 }), /setup to finish/);
     service[flag] = false;
@@ -187,4 +190,46 @@ test('forwarding rechecks Mac installation lock after queued initialization and 
   const input = { hostId: host.id, mode: 'local', targetHost: 'localhost', targetPort: 8000, listenPort: 8001 };
   const first = manager.start(input); service.macInstallation = true; await assert.rejects(first, /Mac installation/); assert.equal((await manager.getState()).active.length, 0);
   service.macInstallation = false; blockedRead = true; const second = manager.start(input); await enteredRead; service.macInstallation = true; release(); await assert.rejects(second, /Mac installation/); assert.equal((await manager.getState()).active.length, 0); await manager.shutdown();
+});
+
+test('automatic local forwarding skips occupied ports and verifies HTTP through the remote machine’s private destination', { timeout: 15000 }, async t => {
+  const { verifyTunnelSite, tunnelSiteURL } = require('../desktop/tunnel-site.cjs');
+  const { manager, targetPort, requestedTargets, websiteRequests } = await fixture(t, { website: true, targetName: '192.168.1.2' });
+  // The fixture's web server deliberately occupies the preferred local port.
+  const state = await manager.start({ hostId: 'fixture-host', mode: 'local', targetHost: '192.168.1.2', targetPort, listenPort: targetPort, autoListen: true, remember: true });
+  const active = state.active[0]; assert.equal(active.status, 'running', active.error); assert.notEqual(active.listenPort, targetPort); assert.equal(active.autoListen, true);
+  const url = tunnelSiteURL({ id: active.id, scheme: 'http:', path: '/private/app?token=transient#section' }, state);
+  assert.equal(url, `http://127.0.0.1:${active.listenPort}/private/app?token=transient#section`);
+  await verifyTunnelSite(url, manager.active.get(active.id));
+  assert.deepEqual(requestedTargets, [{ host: '192.168.1.2', port: targetPort }]); assert.deepEqual(websiteRequests, [{ method: 'HEAD', url: '/private/app?token=transient' }]);
+  assert.equal(state.history[0].listenPort, active.listenPort); assert.equal(state.history[0].autoListen, true);
+  await manager.stop(active.id); await closedPort(active.listenPort);
+});
+
+test('automatic saved-password forward maps remote port 80 to an unprivileged loopback listener', { timeout: 15000 }, async t => {
+  const { verifyTunnelSite, tunnelSiteURL } = require('../desktop/tunnel-site.cjs');
+  const { manager, requestedTargets } = await fixture(t, { password: true, website: true, targetName: 'localhost', destinationPort: 80 });
+  const state = await manager.start({ hostId: 'fixture-host', mode: 'local', targetHost: 'localhost', targetPort: 80, listenPort: 80, autoListen: true, remember: true });
+  const active = state.active[0]; assert.equal(active.status, 'running', active.error); assert.ok(active.listenPort >= 1024); assert.equal(active.targetPort, 80);
+  await verifyTunnelSite(tunnelSiteURL({ id: active.id, scheme: 'http:', path: '/' }, state), manager.active.get(active.id));
+  assert.deepEqual(requestedTargets, [{ host: 'localhost', port: 80 }]);
+});
+
+test('automatic port selection tries successive ports, while explicit custom ports fail without silently changing', { timeout: 15000 }, async t => {
+  const { manager, targetPort } = await fixture(t);
+  const state = await manager.start({ hostId: 'fixture-host', mode: 'local', targetHost: '127.0.0.1', targetPort, listenPort: targetPort });
+  assert.equal(state.active[0].status, 'failed'); assert.equal(state.active[0].listenPort, targetPort); assert.match(state.active[0].error, /listening port is unavailable/);
+  const { EventEmitter } = require('node:events'); const attempts = [];
+  manager.network = { createServer: () => { const server = new EventEmitter(); server.listen = (port, host, callback) => { attempts.push([port, host]); queueMicrotask(() => port < 8002 ? server.emit('error', Object.assign(new Error('busy'), { code: 'EADDRINUSE' })) : callback()); }; server.address = () => ({ port: 8002 }); server.close = callback => callback(); return server; } };
+  const record = { view: { listenPort: 9000, targetPort: 8000 }, stopped: false };
+  assert.equal(await manager.availableLocalPort(record), 8002); assert.deepEqual(attempts, [[8000, '127.0.0.1'], [8001, '127.0.0.1'], [8002, '127.0.0.1']]);
+});
+
+test('a reachable SSH listener does not pass website readiness when the remote service is unavailable', { timeout: 15000 }, async t => {
+  const { verifyTunnelSite, tunnelSiteURL } = require('../desktop/tunnel-site.cjs');
+  const { manager, targetPort } = await fixture(t);
+  const unusedPort = await freePort();
+  const state = await manager.start({ hostId: 'fixture-host', mode: 'local', targetHost: '127.0.0.1', targetPort: unusedPort, listenPort: targetPort, autoListen: true });
+  const active = state.active[0]; assert.equal(active.status, 'running', active.error);
+  await assert.rejects(verifyTunnelSite(tunnelSiteURL({ id: active.id, scheme: 'http:', path: '/' }, state), manager.active.get(active.id)), /could not be reached.*Loopback fixture/);
 });

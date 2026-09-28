@@ -158,15 +158,21 @@ class DriftService {
     return state;
   }
   emit() { try { this.onChange(this.decoratedState()); } catch {} }
-  async persist() {
-    const serialized = JSON.stringify({ version: 1, manualHosts: this.manualHosts, overrides: this.overrides, hiddenHosts: this.hiddenHosts, items: this.state.items, pendingClear: this.pendingClear, clearCleanup: this.clearCleanup, history: this.state.history.slice(0, 100), settings: this.state.settings }, null, 2);
+  async persist(configuration = null) {
     this.writeChain = this.writeChain.catch(() => {}).then(async () => {
+      // Read committed state when this write starts so a queued write cannot undo a just-saved configuration.
+      const manualHosts = configuration?.manualHosts ?? this.manualHosts, overrides = configuration?.overrides ?? this.overrides, hiddenHosts = configuration?.hiddenHosts ?? this.hiddenHosts, settings = configuration?.settings ?? this.state.settings;
+      const serialized = JSON.stringify({ version: 1, manualHosts, overrides, hiddenHosts, items: this.state.items, pendingClear: this.pendingClear, clearCleanup: this.clearCleanup, history: this.state.history.slice(0, 100), settings }, null, 2);
       const temporary = path.join(this.dataDir, 'state-' + crypto.randomUUID() + '.tmp');
       await fs.writeFile(temporary, serialized, { mode: 0o600 }); await fs.rename(temporary, path.join(this.dataDir, 'state.json'));
+      if (configuration) {
+        this.manualHosts = manualHosts; this.overrides = overrides; this.hiddenHosts = hiddenHosts; this.state.settings = settings;
+        if (configuration.hosts) this.state.hosts = configuration.hosts;
+      }
     }); await this.writeChain;
   }
   async getState() { await this.initialized; await this.passwordAuth.initialized; return this.decoratedState(); }
-  assertConfigurationIdle() { if (this.appUpdating) throw new Error('Wait for the app update to finish.'); if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); }
+  assertConfigurationIdle() { if (this.appUpdating) throw new Error('Wait for the app update to finish.'); if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); if (this.configurationSaving) throw new Error('Wait for machine settings to finish saving.'); }
   mutateShelf(operation) {
     const next = this.shelfMutation.catch(() => {}).then(async () => {
       await this.initialized;
@@ -175,6 +181,15 @@ class DriftService {
     });
     this.shelfMutation = next;
     return next;
+  }
+  mutateConfiguration(operation) {
+    return this.mutateShelf(async () => {
+      this.configurationSaving = true;
+      try {
+        await Promise.all([this.scanPromise, this.probePromise].filter(Boolean));
+        return await operation();
+      } finally { this.configurationSaving = false; }
+    });
   }
   async run(command, args, options = {}) { return this.executor(command, args, { timeout: 8000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, ...options }); }
   async resolveAlias(alias) { return parseSSHConfig((await this.run('ssh', ['-G', alias])).stdout); }
@@ -273,7 +288,7 @@ class DriftService {
     if (host.sshAlias) args.push('-o', 'HostName=' + host.address);
     args.push(host.sshAlias || host.address); return args;
   }
-  async probeHosts({ automatic = false } = {}) {
+  async probeHosts({ automatic = false, hostId } = {}) {
     await this.initialized;
     this.assertConfigurationIdle();
     if (this.transferring) throw new Error('Wait for the current transfer to finish before checking machines.');
@@ -284,10 +299,11 @@ class DriftService {
     if (!this.state.environment.sshAvailable) await this.refreshHosts();
     this.assertConfigurationIdle();
     if (this.probePromise) return this.probePromise;
-    this.probePromise = this.checkHosts({ automatic }).finally(() => { this.probePromise = null; }); return this.probePromise;
+    this.probePromise = this.checkHosts({ automatic, hostId }).finally(() => { this.probePromise = null; }); return this.probePromise;
   }
-  async checkHosts({ automatic = false } = {}) {
-    const hosts = this.state.hosts.slice();
+  async checkHosts({ automatic = false, hostId } = {}) {
+    if (hostId !== undefined && (typeof hostId !== 'string' || !this.state.hosts.some(host => host.id === hostId))) throw new Error('Choose an existing machine to check.');
+    const hosts = this.state.hosts.filter(host => hostId === undefined || host.id === hostId);
     await mapLimit(hosts, 4, async host => {
       if (automatic && this.passwordAuth.metadata(host).hasSavedPassword) return;
       if (!host.user) { host.status = 'auth-required'; host.error = 'Add this machine’s SSH login username and authentication settings.'; this.emit(); return; }
@@ -306,28 +322,31 @@ class DriftService {
     return this.getState();
   }
   async saveHost(payload) {
-    await this.initialized;
-    this.assertConfigurationIdle();
-    if (this.transferring) throw new Error('Wait for the current transfer to finish before editing machines.');
-    const current = this.state.hosts.find(host => host.id === payload.id);
-    const host = validateHost({ ...current, ...payload, source: current ? current.source : 'Manual', id: current ? current.id : 'manual-' + crypto.randomUUID(), status: 'unknown' }, { manual: true });
-    if (current && current.source !== 'Manual') this.overrides[host.id] = Object.fromEntries(PUBLIC_HOST_FIELDS.filter(key => !['status', 'error', 'online', 'source'].includes(key)).map(key => [key, host[key]]));
-    else { host.source = 'Manual'; this.manualHosts = [...this.manualHosts.filter(existing => existing.id !== host.id), host]; }
-    this.hiddenHosts = this.hiddenHosts.filter(id => id !== host.id);
-    this.state.hosts = [...this.state.hosts.filter(existing => existing.id !== host.id && identityFor(existing) !== identityFor(host)), host].sort((a, b) => a.name.localeCompare(b.name));
-    await this.persist();
-    if (current && endpointKey(current) !== endpointKey(host)) await this.passwordAuth.forget(current);
-    this.emit(); return this.getState();
+    return this.mutateConfiguration(async () => {
+      if (this.transferring) throw new Error('Wait for the current transfer to finish before editing machines.');
+      const current = this.state.hosts.find(host => host.id === payload.id);
+      const host = validateHost({ ...current, ...payload, source: current ? current.source : 'Manual', id: current ? current.id : 'manual-' + crypto.randomUUID(), status: 'unknown' }, { manual: true });
+      let manualHosts = this.manualHosts, overrides = this.overrides;
+      if (current && current.source !== 'Manual') overrides = { ...overrides, [host.id]: Object.fromEntries(PUBLIC_HOST_FIELDS.filter(key => !['status', 'error', 'online', 'source'].includes(key)).map(key => [key, host[key]])) };
+      else { host.source = 'Manual'; manualHosts = [...manualHosts.filter(existing => existing.id !== host.id), host]; }
+      const hiddenHosts = this.hiddenHosts.filter(id => id !== host.id);
+      const hosts = [...this.state.hosts.filter(existing => existing.id !== host.id && identityFor(existing) !== identityFor(host)), host].sort((a, b) => a.name.localeCompare(b.name));
+      await this.persist({ manualHosts, overrides, hiddenHosts, hosts });
+      if (current && endpointKey(current) !== endpointKey(host)) await this.passwordAuth.forget(current);
+      this.emit(); return this.getState();
+    });
   }
   async removeHost(id) {
-    await this.initialized;
-    this.assertConfigurationIdle();
-    if (this.transferring) throw new Error('Wait for the current transfer to finish before removing machines.');
-    const host = this.state.hosts.find(entry => entry.id === id); if (!host) return this.getState();
-    if (host.source === 'Manual') this.manualHosts = this.manualHosts.filter(entry => entry.id !== id);
-    else this.hiddenHosts = [...new Set([...this.hiddenHosts, id])];
-    delete this.overrides[id]; this.state.hosts = this.state.hosts.filter(entry => entry.id !== id);
-    await this.persist(); await this.passwordAuth.forget(host); this.emit(); return this.getState();
+    return this.mutateConfiguration(async () => {
+      if (this.transferring) throw new Error('Wait for the current transfer to finish before removing machines.');
+      const host = this.state.hosts.find(entry => entry.id === id); if (!host) return this.getState();
+      const manualHosts = host.source === 'Manual' ? this.manualHosts.filter(entry => entry.id !== id) : this.manualHosts;
+      const hiddenHosts = host.source === 'Manual' ? this.hiddenHosts : [...new Set([...this.hiddenHosts, id])];
+      const overrides = { ...this.overrides }; delete overrides[id];
+      const hosts = this.state.hosts.filter(entry => entry.id !== id);
+      await this.persist({ manualHosts, hiddenHosts, overrides, hosts });
+      await this.passwordAuth.forget(host); this.emit(); return this.getState();
+    });
   }
   enqueueFiles(paths, validateSource = null) {
     return this.mutateShelf(async () => {
@@ -481,6 +500,7 @@ class DriftService {
     });
   }
   async checkSource(item, windows = false) {
+    if (/[\u202a-\u202e\u2066-\u2069]/.test(item.name)) throw new Error('This filename contains invisible direction controls. Rename it before sending.');
     const stats = await fs.lstat(item.path);
     if (stats.isSymbolicLink() || !(stats.isFile() || stats.isDirectory())) throw new Error(`${item.name} is no longer a regular file or folder.`);
     if (stats.isDirectory()) {
@@ -488,7 +508,7 @@ class DriftService {
       async function walk(directory) {
         const names = new Set();
         for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-          if (hasControl(entry.name)) throw new Error('This folder has filenames containing control characters. Rename those files or use an archive before sending.');
+          if (hasControl(entry.name) || /[\u202a-\u202e\u2066-\u2069]/.test(entry.name)) throw new Error('This folder has filenames containing control characters. Rename those files or use an archive before sending.');
           if (names.has(nameKey(entry.name))) throw new Error('This folder has names that differ only in capitalization or Unicode spelling. Use an archive to preserve them safely on every filesystem.');
           names.add(nameKey(entry.name));
           if (windows && invalidWindowsName(entry.name)) throw new Error(`${entry.name} is not a valid filename on Windows. Rename it before sending.`);
@@ -698,7 +718,12 @@ class DriftService {
       this.emit(); return this.getState();
     } finally { this.authenticationSetup = false; }
   }
-  async updateSettings(patch) { await this.initialized; this.assertConfigurationIdle(); this.state.settings = { ...this.state.settings, ...this.validSettings(patch) }; await this.persist(); this.emit(); return this.getState(); }
+  async updateSettings(patch) {
+    return this.mutateConfiguration(async () => {
+      await this.persist({ settings: { ...this.state.settings, ...this.validSettings(patch) } });
+      this.emit(); return this.getState();
+    });
+  }
 }
 
 module.exports = { DriftService };

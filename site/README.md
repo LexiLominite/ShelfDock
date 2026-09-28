@@ -1,4 +1,4 @@
-# ShelfDock landing page draft
+# ShelfDock website
 
 This is a standalone static page, independent of the Electron renderer. There is no build step, external font, analytics, API call, clipboard access or file upload. `app.js` simulates the shelf with fictional data; sending/copying in the demonstration never performs a native operation.
 
@@ -24,16 +24,16 @@ The interactive shelf is the main visual. Features use a clear reading order and
 
 The public name is **ShelfDock**; the private edition is **LexBridge**. Current repository links use `LexiLominite/ShelfDock`. Legacy release and app-data names remain unchanged where required for compatibility.
 
-## Before hosting
+## Hosting and search discovery
 
-- Choose and verify the domain. No canonical URL, `og:url` or sitemap domain is guessed in this draft.
-- Add the actual absolute canonical URL, `og:url`, social-image URLs and a sitemap after hosting is selected. Current relative social-image references identify the local asset and need a deployment-specific absolute origin for reliable social previews.
-- Review the 0.5.0 feature/version claims against the released packages: Sent/Received scope, optional update checks, verified downloads, explicit Restart and install and writable-install limits. Private editions use their private repository through an existing authenticated GitHub CLI session, or manual private downloads; they do not query public clean releases.
-- Keep download links at `/releases` while builds are prereleases; `/releases/latest` can omit the intended preview.
-- Preserve unsigned-preview and native-platform testing limitations beside downloads. Mac-only remote app installation is separate from normal cross-platform SSH transfers.
-- Do not claim an open-source license until the owner chooses one. Do not invent support/security email addresses.
-- Verify deployed asset paths, metadata, social previews, keyboard navigation and responsive layout before promotion.
+GitHub Pages publishes only this directory through `.github/workflows/site.yml` after a `main` update that changes the site or its workflow. The configured address is **https://shelfdock.lexilominite.com/**. GitHub Pages owns its HTTPS certificate; the subdomain CNAME points to `lexilominite.github.io`. Other domain records and nameservers are independent.
 
-`assets/social-card.png` is generated from a local, fictional product illustration. Regenerate it if branding changes. It contains no real account, machine or clipboard information.
+Canonical, Open Graph, social-image and structured-data URLs use that origin. `robots.txt` points to `sitemap.xml`. Update all of them together if the domain changes. No analytics or third-party runtime requests are included.
 
-These files prepare a reviewable website. They do not publish a site, configure DNS or authorize hosting.
+- Keep preview download links at `/releases`; `/releases/latest` can omit prereleases.
+- Review feature/version claims against the published packages. Preserve unsigned-package and native-platform limitations beside downloads.
+- Private editions use their private repository through an existing authenticated GitHub CLI session, or manual private downloads. Private presets and builds are never website assets.
+- Do not claim an open-source license until the owner chooses one.
+- Verify deployed assets, metadata, social previews, keyboard navigation and responsive layout after a hosting change.
+
+`assets/social-card.png` is a local fictional product illustration with no real accounts, machines or clipboard information.
