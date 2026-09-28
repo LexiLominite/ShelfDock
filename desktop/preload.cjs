@@ -50,7 +50,7 @@ contextBridge.exposeInMainWorld('drift', {
   onTunnels: callback => subscribe('drift:tunnels', callback),
   getState: () => invoke('getState'),
   refreshHosts: () => invoke('refreshHosts'),
-  probeHosts: () => invoke('probeHosts'),
+  probeHosts: request => invoke('probeHosts', request),
   configureAccess: request => invoke('configureAccess', request),
   forgetPassword: hostId => invoke('forgetPassword', hostId),
   saveHost: host => invoke('saveHost', host),
