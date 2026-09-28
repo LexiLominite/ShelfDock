@@ -7,7 +7,22 @@ const subscribe = (channel, callback) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 contextBridge.exposeInMainWorld('drift', {
-  productName: process.argv.includes('--lex-drift-product-name=lex-drift') ? 'lex-drift' : 'DropHarbor',
+  getReceived: () => invoke('getReceived'),
+  refreshReceived: () => invoke('refreshReceived'),
+  markReceivedRead: request => invoke('markReceivedRead', request),
+  openReceivedFolder: request => invoke('openReceivedFolder', request),
+  addReceivedToShelf: request => invoke('addReceivedToShelf', request),
+  onReceived: callback => subscribe('drift:received', callback),
+  getUpdates: () => invoke('getUpdates'),
+  checkForUpdates: () => invoke('checkForUpdates'),
+  updateUpdatePreferences: request => invoke('updateUpdatePreferences', request),
+  downloadUpdate: () => invoke('downloadUpdate'),
+  cancelUpdate: () => invoke('cancelUpdate'),
+  installUpdate: () => invoke('installUpdate'),
+  openUpdateRelease: () => invoke('openUpdateRelease'),
+  revealUpdateDownload: () => invoke('revealUpdateDownload'),
+  onUpdates: callback => subscribe('drift:updates', callback),
+  productName: process.argv.includes('--lex-drift-product-name=LexBridge') ? 'LexBridge' : process.argv.includes('--lex-drift-product-name=lex-drift') ? 'lex-drift' : 'ShelfDock',
   updateClipboardTools: request => invoke('updateClipboardTools', request),
   getClipboardHistory: request => invoke('getClipboardHistory', request),
   updateClipboardPreferences: request => invoke('updateClipboardPreferences', request),

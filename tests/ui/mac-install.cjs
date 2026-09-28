@@ -27,7 +27,7 @@ const harness = require('./harness.cjs');
       await open(page); await preview(page);
       const review = page.getByRole('region', {name: 'Installation destination'});
       assert.ok((await review.innerText()).includes('demo@machine-0.example.test'));
-      assert.ok((await review.innerText()).includes('/Users/demo/Applications/DropHarbor.app'));
+      assert.ok((await review.innerText()).includes('/Users/demo/Applications/ShelfDock.app'));
       assert.equal(await page.evaluate(() => window.__calls.filter(c => c.method === 'installOnMac').length), 0, 'preview cannot install');
       const install = page.getByRole('button', {name: 'Install on Studio', exact: true});
       assert.equal(await install.isDisabled(), true, 'personal preset needs explicit consent');

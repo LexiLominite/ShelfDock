@@ -19,3 +19,8 @@ clipboard-history/
 ssh-keys/
 
 tunnels.json
+
+# Local receipt and update state is never source.
+received.json
+updates.json
+update-cache/

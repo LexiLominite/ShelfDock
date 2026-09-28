@@ -4,6 +4,8 @@ import ClipboardPanel from './ClipboardPanel';
 import TunnelPanel from './TunnelPanel';
 import MachineCard from './MachineCard';
 import MacInstallPanel from './MacInstallPanel';
+import ReceivedPanel from './ReceivedPanel';
+import UpdatesPanel from './UpdatesPanel';
 
 const ITEM_MIME = 'application/x-drift-items';
 const emptyState = { clipboardTools: { enabled: false, showTab: true, historyEnabled: false }, hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
@@ -26,13 +28,20 @@ const orderHosts = (hosts) => { const rank = { ready: 0, checking: 1, unknown: 2
 
 function App() {
   const bridge = window.drift;
-  const productName = bridge?.productName || 'DropHarbor';
+  const productName = bridge?.productName || 'ShelfDock';
   useEffect(() => { document.title = productName; }, [productName]);
   const isDemo = !bridge;
   const [state, setState] = useState(isDemo ? demoState : emptyState);
   const [activeSection, setActiveSection] = useState('transfers');
   const clipboardVisible = state.clipboardTools?.enabled === true && state.clipboardTools?.showTab !== false;
-  useEffect(() => { if (!clipboardVisible) setActiveSection('transfers'); }, [clipboardVisible]);
+  useEffect(() => { if (!clipboardVisible && activeSection === 'clipboard') setActiveSection('transfers'); }, [clipboardVisible, activeSection]);
+  const [received, setReceived] = useState({ received: [], unreadCount: 0, scanning: false });
+  const [receivedUIState, setReceivedUIState] = useState({ filter: 'received', query: '', selectedId: '' });
+  const [deviceNameDraft, setDeviceNameDraft] = useState('');
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const updateLock = useRef(false);
+  const setUpdateOperation = useCallback(value => { updateLock.current = value; setUpdateBusy(value); }, []);
+  const applyReceived = useCallback(next => { if (next?.received) setReceived(next); }, []);
   const [clipboardEditing, setClipboardEditing] = useState(false);
   const [clipboardUIState, setClipboardUIState] = useState({ query: '', filter: 'all', selectedId: '', scrollTop: 0 });
   const [quickHost, setQuickHost] = useState(null);
@@ -85,10 +94,10 @@ function App() {
   const suppressPasteUntil = useRef(0);
   const modalRef = useRef(null);
   const closeModal = useCallback(() => {
-    if (accessLock.current || tunnelLock.current || macInstallLock.current) return;
+    if (accessLock.current || tunnelLock.current || macInstallLock.current || updateLock.current) return;
     setAccessPassword(''); setAccessError(''); setAccessHostId(''); setModal(null);
   }, []);
-  const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current || macInstallLock.current, []);
+  const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current || macInstallLock.current || updateLock.current, []);
   const closeQuick = useCallback(() => { if (!tunnelLock.current) setQuickHost(null); }, []);
   const setTunnelOperation = useCallback((value) => { tunnelLock.current = value; setTunnelBusy(value); }, []);
   const setMacInstallOperation = useCallback(value => { macInstallLock.current = value; setMacInstallBusy(value); }, []);
@@ -104,6 +113,14 @@ function App() {
     return next;
   }, []);
   useEffect(() => { stateRef.current = state; }, [state]);
+  useEffect(() => { if (modal === 'settings') setDeviceNameDraft(stateRef.current.settings?.deviceName || ''); }, [modal]);
+  useEffect(() => {
+    if (!bridge?.getReceived) return;
+    let mounted = true, eventReceived = false;
+    const unsubscribe = bridge.onReceived?.(next => { eventReceived = true; if (mounted) applyReceived(next); });
+    Promise.resolve(bridge.getReceived()).then(next => { if (mounted && !eventReceived) applyReceived(next); }).catch(() => {});
+    return () => { mounted = false; unsubscribe?.(); };
+  }, [bridge, applyReceived]);
   useEffect(() => {
     const expiresAt = Date.parse(state.clearShelfUndo?.expiresAt || '');
     if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return;
@@ -474,16 +491,16 @@ function App() {
         <div className="header-actions">
           {isDemo && <span className="demo-label">Demo preview</span>}
           <button className={`machines-toggle ${machinesOpen ? 'active' : ''}`} onMouseEnter={() => setMachinesOpen(true)} onFocus={() => setMachinesOpen(true)} onClick={() => setMachinesOpen(true)} aria-expanded={machinesOpen} aria-controls="machines-pane"><Monitor size={15} /> Machines <span className="count">{state.hosts.length} · {state.hosts.filter(host => host.status === 'ready').length} ready</span><ChevronDown size={13} /></button>
-          <button className="icon-button" aria-label="Settings" title="Settings" onClick={() => setModal('settings')}><Settings2 size={17} /></button>
+          <button className="icon-button settings-button" aria-label="Settings" title={state.updatesSummary?.downloadedVersion ? `Settings · Update ${state.updatesSummary.downloadedVersion} ready to install` : state.updatesSummary?.availableVersion ? `Settings · Update ${state.updatesSummary.availableVersion} available` : 'Settings'} onClick={() => setModal('settings')}><Settings2 size={17} />{state.updatesSummary?.availableVersion && <span className="settings-update-dot" aria-label="Update available" />}</button>
           <span className="header-divider" />
           <button className="icon-button hide-button" aria-label={`Hide ${productName}`} title={`Hide ${productName} · shake or press ⌘ / Ctrl + Shift + Space to show it again`} onClick={() => isDemo ? noticeNow(`In the desktop app, ${productName} tucks into your menu bar.`) : bridge.hideWindow()}><X size={17} /></button>
         </div>
       </header>
 
-      <nav className="workspace-tabs" aria-label="Workspace"><button aria-current={activeSection === 'transfers' || !clipboardVisible ? 'page' : undefined} className={activeSection === 'transfers' ? 'active' : ''} onClick={() => setActiveSection('transfers')}><Send size={15} /> Transfers{state.items.length > 0 && <span>{state.items.length}</span>}</button>{clipboardVisible && <button aria-current={activeSection === 'clipboard' ? 'page' : undefined} className={activeSection === 'clipboard' ? 'active' : ''} onClick={() => setActiveSection('clipboard')}><Clipboard size={15} /> Clipboard</button>}<label className="density-picker"><span>View</span><select aria-label="Display density" disabled={!!busy || tunnelBusy || dragging} value={state.settings?.viewMode || 'expanded'} onChange={event => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label></nav>
+      <nav className="workspace-tabs" aria-label="Workspace"><button aria-current={activeSection === 'transfers' ? 'page' : undefined} className={activeSection === 'transfers' ? 'active' : ''} onClick={() => setActiveSection('transfers')}><Send size={15} /> Transfers{state.items.length > 0 && <span>{state.items.length}</span>}</button><button aria-current={activeSection === 'received' ? 'page' : undefined} className={activeSection === 'received' ? 'active' : ''} onClick={() => setActiveSection('received')}><ArrowDownToLine size={15} /> Received{received.unreadCount > 0 && <span aria-label={`${received.unreadCount} new arrivals`}>{received.unreadCount}</span>}</button>{clipboardVisible && <button aria-current={activeSection === 'clipboard' ? 'page' : undefined} className={activeSection === 'clipboard' ? 'active' : ''} onClick={() => setActiveSection('clipboard')}><Clipboard size={15} /> Clipboard</button>}<label className="density-picker"><span>View</span><select aria-label="Display density" disabled={!!busy || tunnelBusy || dragging} value={state.settings?.viewMode || 'expanded'} onChange={event => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label></nav>
 
       <main className="workspace">
-        {activeSection === 'transfers' || !clipboardVisible ? <section className="shelf-pane" aria-label="File and text shelf">
+        {activeSection === 'transfers' ? <section className="shelf-pane" aria-label="File and text shelf">
           <div className="shelf-heading"><div><h1>Transfers</h1><p className="shelf-subtitle">Collect here. Drop onto a machine to send.</p></div><div className="shelf-counter" title="Items on your shelf">{state.items.length}<span>on your shelf</span></div></div>
           <div className={`drop-tray ${trayDrag ? 'drag-over' : ''} ${state.items.length ? 'has-items' : ''}`} onDragEnter={(event) => { event.preventDefault(); if (event.dataTransfer.types.includes(ITEM_MIME)) return; dragDepth.current += 1; setTrayDrag(true); }} onDragLeave={(event) => { event.preventDefault(); dragDepth.current -= 1; if (dragDepth.current <= 0) setTrayDrag(false); }} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }} onDrop={dropTray}>
             {!state.items.length ? <div className="empty-tray">
@@ -503,7 +520,7 @@ function App() {
           <div className="shelf-bottom"><span title={`Shake once to show ${productName}. Pause briefly, then shake again to hide. ⌘ / Ctrl + Shift + Space also toggles the shelf.`}><MousePointer2 size={13} /> {isDemo ? 'Shake to show or hide in the desktop app' : state.settings?.shakeEnabled ? 'Shake to show / hide · ⌘ / Ctrl + Shift + Space' : state.environment?.shortcutAvailable === false ? `Open ${productName} from your tray` : 'Show / hide · ⌘ / Ctrl + Shift + Space'}</span>{state.items.length > 0 && <button className="text-button muted" disabled={!!busy || sending} onClick={() => action('clearItems')}>Clear shelf</button>}</div>
           {state.items.length > 0 && selectedHostIds.length === 0 && <div className="send-bar"><span>{activeHost ? <><span className={`tiny-dot ${activeHost.status}`} /> {activeHost.name}<small>{activeHost.destination || '~/Desktop'}</small></> : 'Choose a machine, or drop an item on one.'}</span><button className="primary-button compact" disabled={!activeHost || activeHost.status !== 'ready' || !selectedItems.length || sending || settingUpAccess} onClick={() => sendItems(activeHost.id, selectedItems)}>{sending ? <Loader2 size={14} className="spinning" /> : <Send size={13} />} Send{selectedItems.length > 0 ? ` ${selectedItems.length}` : ''}</button></div>}
           {state.items.length > 0 && selectedHostIds.length > 0 && <div className="send-bar batch-send-bar"><span><strong>{selectedItems.length} {selectedItems.length === 1 ? 'item' : 'items'} → {selectedHostIds.length} {selectedHostIds.length === 1 ? 'machine' : 'machines'}</strong><small>{!selectedItems.length ? 'Select the items you want to send.' : !batchHostsReady ? 'A selected machine needs an SSH check.' : 'Review destinations before sending.'}</small></span><button className="primary-button compact" disabled={!selectedItems.length || !batchHostsReady || !!busy || sending} onClick={reviewBatch}><Send size={13} /> Review & send</button></div>}
-        </section> : <ClipboardPanel bridge={bridge} viewMode={state.settings?.viewMode || 'expanded'} uiState={clipboardUIState} onUIStateChange={setClipboardUIState} capturePaused={Boolean(modal || machineMenu || quickHost || fieldFocused || tunnelBusy)} blocked={settingUpAccess || sending || tunnelBusy} onEditingChange={setClipboardEditing} onAddToShelf={(next) => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine or drag the item to send.'); }} />}
+        </section> : activeSection === 'received' ? <ReceivedPanel bridge={bridge} snapshot={received} onSnapshot={applyReceived} history={state.history} shelfItems={state.items} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || updateBusy} uiState={receivedUIState} onUIStateChange={setReceivedUIState} onAddToShelf={next => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine to send onward.'); }} onSelectSent={ids => { setSelectedItems(ids); setActiveSection('transfers'); noticeNow('Shelf items selected. Choose a machine; nothing has been sent.'); }} /> : <ClipboardPanel bridge={bridge} viewMode={state.settings?.viewMode || 'expanded'} uiState={clipboardUIState} onUIStateChange={setClipboardUIState} capturePaused={Boolean(modal || machineMenu || quickHost || fieldFocused || tunnelBusy)} blocked={settingUpAccess || sending || tunnelBusy} onEditingChange={setClipboardEditing} onAddToShelf={(next) => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine or drag the item to send.'); }} />}
 
         {machinesOpen && <aside className="machines-pane" id="machines-pane" aria-label="Machines">
           <div className="pane-heading"><div><h2>Machines</h2></div><button className="icon-button small" aria-label="Close machines" disabled={tunnelBusy || dragging} onClick={() => !dragging && setMachinesOpen(false)}><X size={15} /></button></div>
@@ -536,8 +553,9 @@ function App() {
         <button role="menuitem" className="danger-button" onClick={async () => { if (!removeArmed) { setRemoveArmed(true); return; } const id = machineMenu.hostId; setMachineMenu(null); await action('removeHost', id, 'Machine removed.'); }}><Trash2 size={15} /><span><strong>{removeArmed ? 'Confirm remove machine' : 'Remove machine…'}</strong></span></button>
       </div>}
       {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }}><section className={`modal ${modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' || modal === 'install' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" ref={modalRef}>
-        <div className="modal-header"><h2 id="modal-title">{modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on this device' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy || macInstallBusy} onClick={closeModal}><X size={17} /></button></div>
+        <div className="modal-header"><h2 id="modal-title">{modal === 'updates' ? 'Updates' : modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on this device' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`}</h2><button className="icon-button" aria-label="Close dialog" disabled={settingUpAccess || tunnelBusy || macInstallBusy || updateBusy} onClick={closeModal}><X size={17} /></button></div>
         {modal === 'tunnels' && <TunnelPanel key={`${tunnelEntry.hostId}-${tunnelEntry.mode}-${tunnelEntry.tab}`} bridge={bridge} host={state.hosts.find((host) => host.id === tunnelEntry.hostId)} initialMode={tunnelEntry.mode} initialTab={tunnelEntry.tab} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} onClose={closeModal} blocked={settingUpAccess || sending} />}
+        {modal === 'updates' && <UpdatesPanel bridge={bridge} onClose={closeModal} onBusyChange={setUpdateOperation} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || dragging || tunnels.active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))} />}
         {modal === 'install' && <MacInstallPanel key={installHostId} bridge={bridge} hosts={state.hosts} initialHostId={installHostId} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy} />}
         {modal === 'text' && <form onSubmit={async (event) => { event.preventDefault(); const next = await addText(textDraft); if (next) setModal(null); }}><p className="modal-intro">Paste a note, a link, or something worth keeping. It will wait on your shelf.</p><textarea className="text-editor" autoFocus rows={8} placeholder="Put your words here…" value={textDraft} onChange={(event) => setTextDraft(event.target.value)} /><div className="modal-actions"><span className="keyboard-hint">⌘ / Ctrl + V also works on the shelf</span><button className="primary-button" disabled={!textDraft.trim() || !!busy}><Plus size={14} /> Add to shelf</button></div></form>}
         {modal === 'host' && <form onSubmit={saveMachine}>
@@ -580,6 +598,8 @@ function App() {
           {state.environment?.wayland && <p className="settings-warning"><CircleAlert size={15} />Global cursor detection is limited on Wayland. Open {productName} from the tray or use its shortcut.</p>}
           {state.environment?.sshAvailable === false && <p className="settings-warning"><CircleAlert size={15} />SSH is missing on this device. Install the OpenSSH client to enable transfers.</p>}
           {warnings.length > 0 && <div className="discovery-warnings"><strong>Discovery notices</strong>{warnings.map((warning, index) => <p key={index}>{typeof warning === 'string' ? warning : warning.message || JSON.stringify(warning)}</p>)}</div>}
+          <div className="setting-row"><div><strong>Name this device</strong><p>Optional name shown on new arrivals sent from here. Leave blank to use “Another computer”.</p></div></div><form className="device-name-setting" onSubmit={async event => { event.preventDefault(); if (await action('updateSettings', { deviceName: deviceNameDraft })) noticeNow('Device name saved. Future transfers will use it.'); }}><input aria-label="This device’s name" maxLength={64} placeholder="For example, Work laptop" value={deviceNameDraft} onChange={event => setDeviceNameDraft(event.target.value)} /><button className="quiet-button" disabled={!!busy} type="submit">Save name</button></form>
+          <div className="setting-row"><div><strong>Updates</strong><p>Check releases, choose automatic checks, and download a verified update. Restart only when you are ready.</p></div><button className="quiet-button" onClick={() => setModal('updates')}><Download size={14} /> {state.updatesSummary?.downloadedVersion ? 'Update ready' : state.updatesSummary?.availableVersion ? 'Update available' : 'Manage updates'}</button></div>
           <div className="configuration-panel"><strong>Take your setup with you.</strong><p>Export machine names, routes, and preferences for another device. Passwords, private keys, and shelf or clipboard content are excluded. The new device still needs its own SSH access.</p><div className="configuration-actions"><button className="quiet-button" disabled={!!busy} onClick={async () => { if (await action('exportConfig')) noticeNow('Configuration exported.'); }}><Download size={13} /> Export configuration</button><button className="quiet-button" disabled={!!busy} onClick={async () => { if (await action('importConfig')) noticeNow('Configuration imported. Check SSH before sending.'); }}><Upload size={13} /> Import configuration</button></div></div>
           <div className="modal-actions"><button className="text-button" onClick={() => action('openSettingsFolder')}>Open settings folder <ArrowUpRight size={12} /></button><button className="quiet-button" onClick={() => isDemo ? noticeNow('Quit is available in the desktop app.') : bridge.quit()}>Quit {productName}</button></div>
         </div>}

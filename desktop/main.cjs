@@ -12,9 +12,11 @@ const { acquireWorker } = require('./worker.cjs');
 const { ClipboardHistory } = require('./clipboard-history.cjs');
 const { TunnelManager } = require('./tunnels.cjs');
 const { MacInstaller } = require('./mac-installer.cjs');
+const { ReceivedManager } = require('./received.cjs');
+const { UpdateManager } = require('./updates.cjs');
 const { tunnelSiteURL, assertTunnelSiteEndpoint } = require('./tunnel-site.cjs');
 
-const { productName = 'DropHarbor', version } = require('../package.json');
+const { productName = 'ShelfDock', version } = require('../package.json');
 // Retain the existing data directory and singleton identity across editions.
 app.setName('lex-drift');
 if (process.env.LEX_DRIFT_DATA_DIR || process.env.DRIFT_DATA_DIR) app.setPath('userData', process.env.LEX_DRIFT_DATA_DIR || process.env.DRIFT_DATA_DIR);
@@ -22,7 +24,7 @@ const backgroundTest = process.env.LEX_DRIFT_BACKGROUND_TEST === '1';
 const startHidden = backgroundTest || process.argv.includes('--background');
 const singleton = app.requestSingleInstanceLock({ background: startHidden });
 if (!singleton) app.quit();
-let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, tunnels, macInstaller, worker, quitting = false, closingWorker = false;
+let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, tunnels, macInstaller, received, updates, worker, quitting = false, closingWorker = false;
 let interaction = { dragging: false, editing: false };
 let runtimeSettings = { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' };
 const detector = new ShakeDetector();
@@ -32,7 +34,8 @@ const entryURL = pathToFileURL(entry).href;
 
 function decorate(state) {
   const warnings = [nativeStatus.migrationWarning, nativeStatus.presetWarning].filter(Boolean);
-  return { ...state, clipboardTools: clipboardHistory?.toolsState?.() || { enabled: false, showTab: true, historyEnabled: false }, discovery: { ...state.discovery, warnings: [...(state.discovery?.warnings || []), ...warnings] }, environment: { ...state.environment, ...nativeStatus } };
+  const updateState = updates?.snapshot();
+  return { ...state, updatesSummary: updateState ? { status: updateState.status, availableVersion: updateState.release?.version, downloadedVersion: updateState.downloaded?.version } : null, clipboardTools: clipboardHistory?.toolsState?.() || { enabled: false, showTab: true, historyEnabled: false }, discovery: { ...state.discovery, warnings: [...(state.discovery?.warnings || []), ...warnings] }, environment: { ...state.environment, ...nativeStatus } };
 }
 function publish(state) {
   if (runtimeSettings.sensitivity !== state.settings.sensitivity) detector.setSensitivity(state.settings.sensitivity);
@@ -87,6 +90,7 @@ function safeHandler(method, fn) {
     if (!window || event.sender !== window.webContents || event.senderFrame?.url !== entryURL) {
       throw new Error(`This request did not come from ${productName}.`);
     }
+    if (service?.appUpdating && !['getState', 'getUpdates', 'hideWindow', 'setInteraction'].includes(method)) throw new Error('Wait for the app update to finish.');
     if (service?.authenticationSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for connection setup to finish.');
     if (service?.configurationImport && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
     if (service?.tunnelSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for forwarding setup to finish.');
@@ -102,7 +106,7 @@ if (singleton) app.whenReady().then(async () => {
     try { await migrateLegacyData({ target: app.getPath('userData'), legacy: path.join(app.getPath('appData'), 'Drift') }); }
     catch (error) { nativeStatus.migrationWarning = error.message; console.warn(error.message); }
   }
-  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); if (service?.state) publish(service.state); } });
+  clipboardHistory = new ClipboardHistory({ dataDir: app.getPath('userData'), clipboard, ClipboardItem, safeStorage, isBlocked: () => backgroundTest || !!service?.appUpdating || interaction.sensitiveEditing || !!(window?.isVisible() && interaction.editing) || !!service?.authenticationSetup, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:clipboard-history', state); if (service?.state) publish(service.state); } });
   await clipboardHistory.initialized;
   service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish, safeStorage });
   await service.getState();
@@ -126,6 +130,10 @@ if (singleton) app.whenReady().then(async () => {
   tunnels = new TunnelManager({ dataDir: app.getPath('userData'), service, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:tunnels', state); } });
   await tunnels.initialized;
   macInstaller = new MacInstaller({ service, sourceApp: process.platform === 'darwin' && app.isPackaged ? path.resolve(path.dirname(process.execPath), '../..') : null, platform: process.platform, arch: process.arch, version, productName, isPackaged: app.isPackaged, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:mac-install', state); } });
+  received = new ReceivedManager({ dataDir: app.getPath('userData'), desktopDir: app.getPath('desktop'), service, enabled: !backgroundTest, openPath: folder => shell.openPath(folder), onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:received', state); } });
+  await received.initialized;
+  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.tunnelSetup || service.macInstallation || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
+  await updates.initialized;
   const initial = await service.getState();
   runtimeSettings = initial.settings;
   detector.setSensitivity(initial.settings.sensitivity);
@@ -150,6 +158,8 @@ if (singleton) app.whenReady().then(async () => {
   for (const method of ['getState', 'refreshHosts', 'probeHosts', 'saveHost', 'removeHost', 'enqueueFiles', 'enqueueText', 'removeItem', 'clearItems', 'undoClear', 'send', 'sendMany', 'updateSettings', 'configureAccess', 'forgetPassword']) {
     safeHandler(method, async (...args) => decorate(await service[method](...args)));
   }
+  for (const [method, operation] of Object.entries({ getReceived: () => received.getState(), refreshReceived: () => received.refresh(), markReceivedRead: request => received.markRead(request), openReceivedFolder: request => received.openFolder(request), addReceivedToShelf: async request => decorate(await received.addToShelf(request)) })) safeHandler(method, operation);
+  for (const [method, operation] of Object.entries({ getUpdates: () => updates.getState(), checkForUpdates: () => updates.check(), updateUpdatePreferences: patch => updates.updatePreferences(patch), downloadUpdate: () => updates.download(), cancelUpdate: () => updates.cancel(), installUpdate: () => updates.install(), openUpdateRelease: () => updates.openRelease(), revealUpdateDownload: () => updates.revealDownload() })) safeHandler(method, operation);
   safeHandler('updateClipboardTools', async patch => { await clipboardHistory.updateTools(patch); return decorate(await service.getState()); });
   for (const [method, operation] of Object.entries({ getClipboardHistory: options => clipboardHistory.getState(options), updateClipboardPreferences: patch => clipboardHistory.updatePreferences(patch), captureClipboardHistory: () => clipboardHistory.capture(), getClipboardEntry: id => clipboardHistory.detail(id), copyClipboardEntry: request => clipboardHistory.copy(request), setClipboardPinned: request => clipboardHistory.setPinned(request), removeClipboardEntry: id => clipboardHistory.remove(id), clearClipboardHistory: () => clipboardHistory.clearUnpinned(), saveClipboardSnippet: request => clipboardHistory.saveSnippet(request), addClipboardEntryToShelf: async id => decorate(await clipboardHistory.addToShelf(id, service)) })) safeHandler(method, (...args) => { if (method !== 'getClipboardHistory') clipboardHistory.requireTools(); return operation(...args); });
   for (const [method, operation] of Object.entries({ getTunnels: () => tunnels.getState(), startTunnel: request => tunnels.start(request), stopTunnel: id => tunnels.stop(id), restartTunnel: id => tunnels.restart(id), removeTunnelHistory: id => tunnels.removeHistory(id), updateTunnelNote: request => tunnels.updateNote(request) })) safeHandler(method, operation);
@@ -198,7 +208,7 @@ if (singleton) app.whenReady().then(async () => {
   tray = new Tray(trayIcon);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Show ${productName}`, click: () => reveal('tray') },
-    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring) return; service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
+    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
     { type: 'separator' },
     { label: `Quit ${productName}`, click: () => { quitting = true; app.quit(); } },
   ]));
@@ -223,10 +233,11 @@ if (singleton) app.whenReady().then(async () => {
       if (detector.add(screen.getCursorScreenPoint())) toggleShelf('shake');
     }, 32);
   }
+  if (!backgroundTest) { received.start(); updates.start(); }
   if (!backgroundTest) clipboardTimer = setInterval(() => clipboardHistory.tick().catch(() => {}), 1500);
   refreshTimer = setInterval(async () => {
     const state = await service.getState();
-    if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring) return;
+    if (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return;
     if (state.history.some(receipt => receipt.status === 'sending')) return;
     service.refreshHosts().then(() => (service.configurationImport || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   }, 90000);
@@ -241,10 +252,10 @@ app.on('second-instance', (_event, _argv, _directory, data) => { if (!data?.back
 app.on('activate', () => reveal('dock'));
 app.on('window-all-closed', () => { if (quitting) app.quit(); });
 app.on('before-quit', event => {
-  quitting = true; clearInterval(poll); clearInterval(refreshTimer); clearInterval(clipboardTimer);
+  quitting = true; clearInterval(poll); clearInterval(refreshTimer); clearInterval(clipboardTimer); received?.stop(); updates?.shutdown();
   if (worker?.primary && !closingWorker) {
     event.preventDefault(); closingWorker = true;
-    Promise.resolve(macInstaller?.shutdown()).catch(console.error).then(() => tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
+    Promise.resolve(macInstaller?.shutdown()).catch(console.error).then(() => Promise.all([service?.shelfMutation?.catch(() => {}), clipboardHistory?.queue, service?.writeChain, received?.operations?.catch(() => {})])).catch(console.error).then(() => tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
   }
 });
 app.on('will-quit', () => { globalShortcut.unregisterAll(); worker?.close().catch(console.error); });

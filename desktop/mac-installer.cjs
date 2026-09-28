@@ -157,11 +157,11 @@ class MacInstaller {
   }
   capabilities() {
     let reason = '';
-    if (this.platform !== 'darwin') reason = 'Install on another Mac is available from the macOS app. The rest of DropHarbor remains cross-platform.';
+    if (this.platform !== 'darwin') reason = 'Install on another Mac is available from the macOS app. The rest of ShelfDock remains cross-platform.';
     else if (!this.isPackaged || !this.sourceApp || !path.isAbsolute(this.sourceApp) || !/^[A-Za-z0-9][A-Za-z0-9 ._-]{0,70}\.app$/.test(path.basename(this.sourceApp))) reason = 'Run the installed macOS .app to install it on another Mac; development and browser previews cannot provide an installer.';
     else if (!['arm64', 'x64'].includes(this.arch)) reason = 'This Mac app architecture cannot be installed on another Mac.';
     else if (this.closed) reason = 'The app is shutting down.';
-    return { available: !reason, reason, sourceApp: this.sourceApp || null, productName: this.productName || 'DropHarbor', version: this.version, architecture: architectureLabel(this.arch) };
+    return { available: !reason, reason, sourceApp: this.sourceApp || null, productName: this.productName || 'ShelfDock', version: this.version, architecture: architectureLabel(this.arch) };
   }
   getState() { return { ...this.capabilities(), operation: this.operation ? clone(this.operation) : null }; }
   emit() { try { this.onChange(this.getState()); } catch {} }

@@ -451,3 +451,6 @@ h1 { font-size: clamp(29px, 4.2vw, 39px); line-height: 1.07; font-weight: 540; l
 .shelf-undo .undo-countdown { font-variant-numeric: tabular-nums; font-size: 10px; color: var(--muted); min-width: 20px; text-align: right; }
 .shelf-undo .quiet-button { color: var(--accent); border-color: var(--accent); flex-shrink: 0; }
 .toast.above-undo { bottom: 119px; }
+
+.settings-button { position: relative; }
+.settings-update-dot { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--canvas); }
