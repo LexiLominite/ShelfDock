@@ -20,7 +20,9 @@ const http = require('node:http');
   let browser;
   const result = { responsive: [], interactions: [], pageErrors: [], externalRequests: [] };
   try {
-    browser = await chromium.launch({ executablePath: process.env.SHELFDOCK_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+    const browserOptions = { headless: true };
+    if (process.env.SHELFDOCK_CHROME) browserOptions.executablePath = process.env.SHELFDOCK_CHROME;
+    browser = await chromium.launch(browserOptions);
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, reducedMotion: 'reduce' });
     page.on('pageerror', error => result.pageErrors.push(error.message));
     page.on('request', request => { if (!request.url().startsWith(base)) result.externalRequests.push(request.url()); });

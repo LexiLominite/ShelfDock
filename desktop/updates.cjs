@@ -187,7 +187,17 @@ class UpdateManager {
         let result; try { result = await readJSON(path.join(this.directory, 'result-' + pending.id + '.json'), 8192); } catch {}
         let backupRetained = false;
         if (typeof pending.backup === 'string' && path.basename(pending.backup).startsWith('.shelfdock-backup-' + pending.id)) try { const backup = await fs.lstat(pending.backup); backupRetained = !backup.isSymbolicLink() && (backup.isDirectory() || backup.isFile()); } catch {}
-        this.state.result = { status: this.version === pending.version ? 'installed' : result?.status || 'interrupted', version: pending.version, backupRetained };
+        const runningVersion = compareVersions(this.version, pending.version);
+        if (runningVersion >= 0) {
+          if (runningVersion === 0) this.state.result = { status: 'installed', version: pending.version, backupRetained };
+          // Consume only the journal, never the retained application backup.
+          await fs.rm(path.join(this.directory, 'install.json'), { force: true });
+          await fs.rm(path.join(this.directory, 'result-' + pending.id + '.json'), { force: true });
+          await fs.rm(path.join(this.directory, 'ready-' + pending.id), { force: true });
+        } else {
+          const failureStatuses = ['parent_running', 'changed', 'backup_failed', 'rolled_back', 'failed'];
+          this.state.result = { status: failureStatuses.includes(result?.status) ? result.status : 'interrupted', version: pending.version, backupRetained };
+        }
       }
     } catch {}
     // Interrupted partial downloads are never restored as installable packages.
@@ -221,7 +231,7 @@ class UpdateManager {
       this.release = release; this.state.lastChecked = this.clock(); this.state.status = release ? this.downloaded ? 'downloaded' : 'available' : 'current'; await this.persist(); this.emit();
     } catch (error) { this.state.status = this.downloaded ? 'downloaded' : this.release ? 'available' : 'error'; this.state.error = controller.signal.aborted ? 'Update check cancelled or timed out.' : safeMessage(error); this.emit(); }
     finally { clearTimeout(deadline); if (this.controller === controller) this.controller = null; }
-    if (!this.state.error && this.release && this.preferences.autoDownload && !this.downloaded) await this.download();
+    if (!this.state.error && this.release?.asset && this.release?.checksumAsset && this.preferences.autoDownload && !this.downloaded) await this.download();
     return this.snapshot();
   }
   async updatePreferences(patch) {

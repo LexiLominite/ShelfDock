@@ -331,3 +331,44 @@ test('manager download, stage, helper handshake, backup, replacement and quiet r
   assert.equal(await fs.readFile(marker, 'utf8'), 'launched'); const plan = JSON.parse(await fs.readFile(path.join(directory, 'updates/public/install.json'), 'utf8')); assert.equal(await fs.readFile(path.join(plan.backup, 'ShelfDock'), 'utf8'), '#!/bin/sh\nexit 0\n');
   const restarted = new UpdateManager({ dataDir: directory, version: '0.6.0', platform: 'linux', arch: 'x64', isPackaged: true, execPath: path.join(target, 'ShelfDock'), stream }); await restarted.initialized; assert.equal(restarted.snapshot().result.status, 'installed'); await restarted.shutdown();
 });
+async function installRecordFixture(t, { runningVersion = '0.6.0', helperStatus = 'installed', keepBackup = true } = {}) {
+  const { directory, manager } = await fixture(t), id = crypto.randomUUID();
+  const journal = path.join(manager.directory, 'install.json'), result = path.join(manager.directory, 'result-' + id + '.json'), ready = path.join(manager.directory, 'ready-' + id), backup = path.join(directory, '.shelfdock-backup-' + id);
+  if (keepBackup) { await fs.mkdir(backup); await fs.writeFile(path.join(backup, 'old-app'), 'retained application'); }
+  await fs.writeFile(journal, JSON.stringify({ id, repository: 'LexiLominite/ShelfDock', version: '0.6.0', backup }));
+  await fs.writeFile(result, JSON.stringify({ status: helperStatus })); await fs.writeFile(ready, 'ready');
+  const restarted = new UpdateManager({ dataDir: directory, version: runningVersion, platform: 'linux', arch: 'x64', identify: async () => ({ available: false }) });
+  await restarted.initialized; t.after(() => restarted.shutdown()); return { directory, restarted, journal, result, ready, backup };
+}
+test('a successful install is reported once and its consumed journal is removed without deleting the app backup', async t => {
+  const value = await installRecordFixture(t);
+  assert.deepEqual(value.restarted.snapshot().result, { status: 'installed', version: '0.6.0', backupRetained: true });
+  for (const file of [value.journal, value.result, value.ready]) await assert.rejects(fs.access(file), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(value.backup, 'old-app'), 'utf8'), 'retained application');
+  const nextStart = new UpdateManager({ dataDir: value.directory, version: '0.6.0', platform: 'linux', arch: 'x64', identify: async () => ({ available: false }) });
+  await nextStart.initialized; assert.equal(nextStart.snapshot().result, null); await nextStart.shutdown();
+});
+test('a newer manually installed version clears an older failed journal without showing a stale warning', async t => {
+  const value = await installRecordFixture(t, { runningVersion: '0.7.0', helperStatus: 'failed' });
+  assert.equal(value.restarted.snapshot().result, null);
+  for (const file of [value.journal, value.result, value.ready]) await assert.rejects(fs.access(file), { code: 'ENOENT' });
+  assert.equal(await fs.readFile(path.join(value.backup, 'old-app'), 'utf8'), 'retained application');
+});
+test('the older app retains a failed update journal for recovery and retry', async t => {
+  const value = await installRecordFixture(t, { runningVersion: '0.5.0', helperStatus: 'rolled_back', keepBackup: false });
+  assert.deepEqual(value.restarted.snapshot().result, { status: 'rolled_back', version: '0.6.0', backupRetained: false });
+  for (const file of [value.journal, value.result, value.ready]) await fs.access(file);
+});
+test('a helper launch result cannot report a successful upgrade while the older app is running', async t => {
+  const value = await installRecordFixture(t, { runningVersion: '0.5.0', helperStatus: 'installed' });
+  assert.equal(value.restarted.snapshot().result.status, 'interrupted'); await fs.access(value.journal); await fs.access(value.result);
+});
+test('automatic downloads leave releases with missing platform packages or checksums available without throwing', async t => {
+  for (const missing of ['platform', 'checksum']) {
+    const candidate = release('0.6.0', missing === 'platform' ? { platform: 'darwin', arch: 'arm64' } : {});
+    if (missing === 'checksum') candidate.assets = candidate.assets.filter(asset => asset.name !== 'SHA256SUMS.txt');
+    const transport = fixtureStream([candidate]), { manager } = await fixture(t, { stream: transport.stream });
+    await manager.updatePreferences({ autoCheck: true, autoDownload: true });
+    const state = await manager.check(); assert.equal(state.status, 'available', missing); assert.equal(state.error, '', missing); assert.equal(state.release.version, '0.6.0', missing); assert.equal(state.canDownload, false, missing); assert.equal(state.downloaded, null, missing); assert.deepEqual(transport.calls, [API_URL], missing);
+  }
+});

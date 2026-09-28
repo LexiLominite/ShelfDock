@@ -4,6 +4,18 @@ This is a standalone static page, independent of the Electron renderer. There is
 
 Preview using a local static web server rooted at this directory. Do not connect this demonstration to the desktop native bridge.
 
+## Verification
+
+With Playwright available to the Node.js runtime and its Chromium browser installed, run from the repository root:
+
+```sh
+node site/verify.cjs
+```
+
+The check uses Playwright's bundled Chromium by default on every platform. Install that browser with `npx playwright install chromium` in the environment where Playwright is installed if it is missing. To use an existing Chrome/Chromium installation instead, set `SHELFDOCK_CHROME` to its full executable path; no platform-specific path is assumed.
+
+The check runs headlessly, exercises the fictional demo and responsive layouts, and writes screenshots plus `verification.json` to `site/.preview-checks`. An optional first argument selects another output directory. It also regenerates the local `assets/social-card.png` illustration. It does not launch the desktop application or use real clipboard data.
+
 ## Design
 
 The palette reuses the app: lavender `#E8EBF6`, off-white `#FAFAFD`, slate `#252A40`, secondary text `#596277`, purple `#6353D9` and pale purple `#E8E5F8`. Existing green `#287052` and amber `#8A5A10` express ready/attention. Avenir Next/Avenir falls back to the platform UI font; exact machine/path data use a local monospace stack.
