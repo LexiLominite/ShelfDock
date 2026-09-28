@@ -51,9 +51,9 @@ async function controller(options = {}) {
     setToolTip() {}
   }
   const app = new EventEmitter();
-  const paths = { appData: '/virtual/app-data', userData: '/virtual/user-data' };
+  const paths = { appData: '/virtual/app-data', userData: '/virtual/user-data', desktop: '/virtual/Desktop' };
   Object.assign(app, {
-    isPackaged: false,
+    isPackaged: options.packaged === true,
     setName(name) { record('setName', name); },
     setPath(key, value) { paths[key] = value; },
     getPath(key) { return paths[key]; },
@@ -71,7 +71,7 @@ async function controller(options = {}) {
     ipcMain: { handle: (key, callback) => handlers.set(key, callback) },
     dialog: { showErrorBox: (...args) => record('errorDialog', ...args), showOpenDialog: async () => { throw new Error('No native dialogs are permitted in controller tests.'); }, showSaveDialog: async () => { throw new Error('No native dialogs are permitted in controller tests.'); } },
     shell: { openPath: () => { throw new Error('No profile access is permitted in controller tests.'); }, openExternal: async url => { record('openExternal', url); if (options.openExternalError) throw new Error(options.openExternalError); } },
-    clipboard: { read: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
+    clipboard: { writeText: value => record('clipboardWrite', value), read: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
   };
   const initialState = { hosts: options.activeTunnels?.length ? [{ ...siteHost }] : [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
   let fakeService;
@@ -83,7 +83,7 @@ async function controller(options = {}) {
   }
   let workerOptions, historyOptions, fakeTunnels;
   const modules = {
-    '../package.json': { productName: options.productName || 'DropHarbor', version: '0.4.1' },
+    '../package.json': { productName: options.productName || 'ShelfDock', version: '0.4.1' },
     electron,
     'node:path': path,
     'node:url': { pathToFileURL },
@@ -95,7 +95,9 @@ async function controller(options = {}) {
     './migrate.cjs': { migrateLegacyData: async () => undefined },
     './tunnels.cjs': { TunnelManager: class { constructor() { fakeTunnels = this; this.state = { active: options.activeTunnels || [], history: [] }; this.initialized = Promise.resolve(); } get active() { return new Map(this.state.active.map(view => [view.id, { view: { ...view, hostId: siteHost.id }, endpoint: endpointKey(siteHost) }])); } snapshot() { return this.state; } async getState() { return this.state; } async stop(id) { record('tunnelStop', id); this.state.active = this.state.active.filter(tunnel => tunnel.id !== id); } async shutdown() { record('tunnelsShutdown'); } } },
     './mac-installer.cjs': { MacInstaller: class { constructor(args) { this.args = args; record('macInstallerCreated', args.platform, args.sourceApp); } getState() { return { available: this.args.platform === 'darwin' && this.args.isPackaged, operation: null }; } async preview(request) { record('macPreview', request); return { id: 'fictional-plan' }; } async install(request) { record('macInstall', request); return this.getState(); } async shutdown() { record('macInstallerShutdown'); await options.installerShutdown; } } },
-    './tunnel-site.cjs': require('../desktop/tunnel-site.cjs'),
+    './received.cjs': { ReceivedManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('receivedCreated', args.enabled); } async getState() { return { received: [], unreadCount: 0 }; } async refresh() { record('receivedRefresh'); return this.getState(); } async markRead(value) { record('receivedRead', value); return this.getState(); } async openFolder(value) { record('receivedOpen', value); return this.getState(); } async addToShelf(value) { record('receivedShelf', value); return initialState; } start() { record('receivedStart'); } stop() { record('receivedStop'); } } },
+    './updates.cjs': { UpdateManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('updatesCreated', args.enabled); } snapshot() { return { status: 'idle', version: '0.5.0' }; } async getState() { return this.snapshot(); } async check() { record('updatesCheck'); return this.getState(); } async install() { if (this.args.isBusy()) throw new Error('Finish active work first.'); this.args.onChange({status:'installing'}); record('updatesInstall'); } start() { record('updatesStart'); } shutdown() { record('updatesShutdown'); } } },
+    './tunnel-site.cjs': { ...require('../desktop/tunnel-site.cjs'), verifyTunnelSite: async (url, recordValue) => { record('verifyTunnelSite', url); if (options.siteProbe) await options.siteProbe(url, recordValue); if (options.siteProbeError) throw new Error(options.siteProbeError); } },
     './clipboard-history.cjs': { ClipboardHistory: class {
       constructor(args) { historyOptions = args; this.initialized = Promise.resolve(); this.tools = { enabled: options.clipboardToolsEnabled === true, showTab: true, historyEnabled: false }; }
       toolsState() { return { ...this.tools }; }
@@ -122,7 +124,7 @@ async function controller(options = {}) {
   const context = {
     require(name) { if (!(name in modules)) throw new Error('Unmocked dependency: ' + name); return modules[name]; },
     __dirname: desktop,
-    process: { getuid: () => 1000, platform: options.platform || 'darwin', argv: ['electron', '/virtual/main.cjs', ...(options.argv || [])], env: { LEX_DRIFT_DATA_DIR: '/virtual/user-data', ...(options.env || {}) }, resourcesPath: '/virtual/resources' },
+    process: { getuid: () => 1000, platform: options.platform || 'darwin', argv: ['electron', '/virtual/main.cjs', ...(options.argv || [])], env: { LEX_DRIFT_DATA_DIR: '/virtual/user-data', ...(options.env || {}) }, resourcesPath: '/virtual/resources', arch: 'arm64', execPath: '/virtual/ShelfDock.app/Contents/MacOS/ShelfDock' },
     Date: ClockDate,
     console: { error: (...values) => errors.push(values), warn: (...values) => errors.push(values) },
     setInterval(callback, milliseconds) { const timer = { callback, milliseconds, active: true }; timers.push(timer); return timer; },
@@ -184,6 +186,18 @@ test('configuration import accepts interaction release so the gesture can hide a
   await assert.rejects(c.invoke('refreshHosts'), /configuration import to finish/);
 });
 
+test('pending machine settings saves block native mutations and automatic scans while read and stop controls remain available', async () => {
+  const c = await controller({ argv: ['--background'] }); let refreshed = 0, probed = 0;
+  c.service.refreshHosts = async () => { refreshed++; return c.service.state; }; c.service.probeHosts = async () => { probed++; return c.service.state; };
+  c.service.configurationSaving = true;
+  for (const method of ['saveHost', 'startTunnel', 'previewMacInstall', 'installUpdate', 'captureClipboard']) await assert.rejects(c.invoke(method, {}), /settings to finish saving/);
+  await c.invoke('getState'); await c.invoke('getTunnels'); await c.invoke('stopTunnel', 'fixture'); await c.invoke('setInteraction', { editing: false });
+  const timer = c.timers.find(entry => entry.milliseconds === 90000); await timer.callback(); c.trays[0].menu.find(entry => entry.label === 'Refresh machines').click(); await flush();
+  assert.equal(refreshed, 0); assert.equal(probed, 0);
+  c.service.configurationSaving = false; let finishScan; c.service.refreshHosts = () => { refreshed++; return new Promise(resolve => { finishScan = resolve; }); };
+  await timer.callback(); c.service.configurationSaving = true; finishScan(c.service.state); await flush(); assert.equal(refreshed, 1); assert.equal(probed, 0, 'a scan already running cannot start a new probe during the save');
+});
+
 test('silent background-test mode never shows, focuses, pins, registers shortcuts, creates a tray, or polls the cursor', async () => {
   const c = await controller({ env: { LEX_DRIFT_BACKGROUND_TEST: '1' } }); const window = c.windows[0];
   assert.equal(window.isVisible(), false); assert.equal(window.options.show, false); assert.equal(window.options.alwaysOnTop, false);
@@ -223,7 +237,7 @@ test('Electron single-instance denial cannot create a second worker or user inte
 
 test('edition branding preserves the shared worker and existing data identity', async () => {
   let sharedRuntime;
-  for (const productName of ['DropHarbor', 'lex-drift']) {
+  for (const productName of ['ShelfDock', 'lex-drift', 'LexBridge']) {
     const c = await controller({ productName, argv: ['--background'] });
     assert.equal(c.errors.length, 0);
     assert.equal(c.windows[0].options.title, productName);
@@ -299,7 +313,7 @@ test('site IPC preserves sender, frame, and setup guards plus denied renderer na
   for (const event of [{ sender: {}, senderFrame: validFrame }, { sender: window.webContents, senderFrame: { url: 'https://example.com/' } }, { sender: window.webContents }]) {
     await assert.rejects(handler(event, request), /did not come from/);
   }
-  for (const property of ['authenticationSetup', 'configurationImport', 'tunnelSetup']) {
+  for (const property of ['authenticationSetup', 'configurationImport', 'configurationSaving', 'tunnelSetup']) {
     c.service[property] = true;
     await assert.rejects(c.invoke('openTunnelSite', request), /Wait for/);
     c.service[property] = false;
@@ -372,4 +386,73 @@ test('Mac installation drains before releasing the singleton worker on quit', as
   const order = c.calls.map(call => call.type);
   assert.ok(order.indexOf('macInstallerShutdown') < order.indexOf('tunnelsShutdown'));
   assert.ok(order.indexOf('tunnelsShutdown') < order.indexOf('workerClose'));
+});
+
+test('Received is independent of Clipboard and native IPC rejects foreign receipt or update requests', async () => {
+  const c = await controller({ clipboardToolsEnabled: false });
+  assert.deepEqual(c.errors, []);
+  assert.equal((await c.invoke('getReceived')).unreadCount, 0);
+  await c.invoke('markReceivedRead', { id: 'fixture' });
+  await c.invoke('addReceivedToShelf', { id: 'fixture', names: ['Notes.txt'] });
+  assert.equal(c.calls.filter(call => call.type === 'receivedShelf').length, 1);
+  for (const method of ['openReceivedFolder', 'addReceivedToShelf', 'installUpdate', 'downloadUpdate']) {
+    await assert.rejects(c.handlers.get('drift:' + method)({ sender: {}, senderFrame: { url: 'https://example.test' } }, { id: 'fixture' }), /did not come from/);
+  }
+});
+
+test('update installation waits for active operations and locks native mutations before restart', async () => {
+  const c = await controller({ argv: ['--background'] });
+  for (const flag of ['transferring', 'scanPromise', 'probePromise', 'authenticationSetup', 'configurationImport', 'configurationSaving', 'tunnelSetup', 'macInstallation']) {
+    c.service[flag] = true;
+    await assert.rejects(c.invoke('installUpdate'), /finish|Finish/);
+    c.service[flag] = false;
+  }
+  await c.invoke('setInteraction', { dragging: true });
+  await assert.rejects(c.invoke('installUpdate'), /Finish active work/);
+  await c.invoke('setInteraction', { dragging: false });
+  await c.invoke('installUpdate');
+  assert.equal(c.service.appUpdating, true);
+  assert.equal(c.historyOptions.isBlocked(), true, 'Automatic clipboard recording is suspended throughout installation');
+  for (const method of ['send', 'sendMany', 'configureAccess', 'addReceivedToShelf', 'startTunnel', 'installOnMac']) await assert.rejects(c.invoke(method, {}), /app update to finish/);
+  await c.invoke('getUpdates'); await c.invoke('hideWindow');
+  const connected = await controller({ activeTunnels: [{ id: 'active', status: 'running' }] });
+  await assert.rejects(connected.invoke('installUpdate'), /Finish active work/);
+});
+
+test('silent tests do not start Desktop scanning or update network checks', async () => {
+  const c = await controller({ env: { LEX_DRIFT_BACKGROUND_TEST: '1' } });
+  assert.equal(c.calls.find(call => call.type === 'receivedCreated').values[0], false);
+  assert.equal(c.calls.find(call => call.type === 'updatesCreated').values[0], false);
+  assert.equal(c.calls.some(call => ['receivedStart', 'updatesStart'].includes(call.type)), false);
+});
+
+test('site IPC waits for website readiness and Stop or endpoint changes prevent a late browser launch', async () => {
+  const id = '04bd066c-be64-4d07-acf9-0e4a12e025b1'; const tunnel = { id, mode: 'local', status: 'running', listenPort: 8001 };
+  const request = { id, scheme: 'http:', path: '/app?transient=1#detail' };
+  const failed = await controller({ activeTunnels: [tunnel], siteProbeError: 'Start the service on the selected machine.' });
+  await assert.rejects(failed.invoke('openTunnelSite', request), /Start the service/); assert.equal(failed.calls.filter(call => call.type === 'openExternal').length, 0);
+  for (const change of ['stop', 'endpoint']) {
+    let release; const wait = new Promise(resolve => { release = resolve; }); const c = await controller({ activeTunnels: [tunnel], siteProbe: () => wait });
+    const opening = c.invoke('openTunnelSite', request); await flush();
+    assert.equal(c.calls.filter(call => call.type === 'verifyTunnelSite').length, 1); assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 0);
+    if (change === 'stop') await c.invoke('stopTunnel', id); else c.service.state.hosts[0].address = 'changed.invalid';
+    release(); await assert.rejects(opening, /not running|connection details changed/); assert.equal(c.calls.filter(call => call.type === 'openExternal').length, 0);
+  }
+});
+
+test('Copy explicitly writes only the backend-derived live loopback URL and never opens a browser', async () => {
+  const id = '04bd066c-be64-4d07-acf9-0e4a12e025b1'; const c = await controller({ activeTunnels: [{ id, mode: 'local', status: 'running', listenPort: 8002 }] });
+  const request = { id, scheme: 'http:', path: '/app?temporary=1#detail' };
+  const result = await c.invoke('copyTunnelSite', request);
+  assert.equal(result.url, 'http://127.0.0.1:8002/app?temporary=1#detail');
+  assert.deepEqual(c.calls.filter(call => call.type === 'clipboardWrite').map(call => call.values[0]), [result.url]);
+  assert.equal(c.calls.filter(call => call.type === 'openExternal' || call.type === 'verifyTunnelSite').length, 0);
+  await assert.rejects(c.invoke('copyTunnelSite', { ...request, path: '//external.invalid/' }), /page path/);
+  await c.invoke('stopTunnel', id); await assert.rejects(c.invoke('copyTunnelSite', request), /not running/);
+});
+
+test('packaged public edition does not read or apply a personal preset', async () => {
+  const c = await controller({ packaged: true, productName: 'ShelfDock', argv: ['--background'] });
+  assert.equal(c.errors.length, 0, 'public startup never touches guarded preset filesystem');
+  assert.equal(c.windows.length, 1);
 });

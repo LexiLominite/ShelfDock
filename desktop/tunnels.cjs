@@ -23,7 +23,8 @@ function validate(input) {
     ports[field] = port;
   }
   if (input.remember !== undefined && typeof input.remember !== 'boolean') throw new Error('Choose whether to remember this forwarding plan.');
-  return { mode: input.mode, targetHost, ...ports, note: note(input.note), remember: input.remember === true };
+  if (input.autoListen !== undefined && (typeof input.autoListen !== 'boolean' || (input.autoListen && input.mode !== 'local'))) throw new Error('Automatic listening ports are available only for local forwards.');
+  return { mode: input.mode, targetHost, ...ports, note: note(input.note), remember: input.remember === true, ...(input.autoListen ? { autoListen: true } : {}) };
 }
 
 function listenerCommand(host, port) {
@@ -65,7 +66,7 @@ class TunnelManager {
         try {
           const settings = validate(entry);
           if (!/^[a-f0-9-]{36}$/.test(entry.id) || typeof entry.hostId !== 'string' || typeof entry.hostName !== 'string' || !/^[a-f0-9]{64}$/.test(entry.endpoint)) continue;
-          this.history.push({ id: entry.id, hostId: entry.hostId, hostName: entry.hostName.slice(0, 120), endpoint: entry.endpoint, mode: settings.mode, targetHost: settings.targetHost, targetPort: settings.targetPort, listenPort: settings.listenPort, note: settings.note, lastUsedAt: typeof entry.lastUsedAt === 'string' ? entry.lastUsedAt : null });
+          this.history.push({ id: entry.id, hostId: entry.hostId, hostName: entry.hostName.slice(0, 120), endpoint: entry.endpoint, mode: settings.mode, targetHost: settings.targetHost, targetPort: settings.targetPort, listenPort: settings.listenPort, ...(settings.autoListen ? { autoListen: true } : {}), note: settings.note, lastUsedAt: typeof entry.lastUsedAt === 'string' ? entry.lastUsedAt : null });
         } catch {}
       }
     } catch (error) { if (error.code !== 'ENOENT') this.warning = 'Saved forwarding plans could not be loaded. Existing machine settings are unchanged.'; }
@@ -86,7 +87,7 @@ class TunnelManager {
   assertIdle() {
     if (this.closed) throw new Error('Forwarding is shutting down.');
     if (this.service.macInstallation) throw new Error('Wait for Mac installation to finish before starting a forward.');
-    if (this.service.authenticationSetup || this.service.configurationImport) throw new Error('Wait for machine access or configuration setup to finish before starting a forward.');
+    if (this.service.authenticationSetup || this.service.configurationImport || this.service.configurationSaving) throw new Error('Wait for machine access or configuration setup to finish before starting a forward.');
   }
   async start(input) { return this.startPlan(input); }
   async startPlan(input, expectedEndpoint) {
@@ -96,14 +97,16 @@ class TunnelManager {
     if (!live || !live.user) throw new Error('Choose a saved machine with an SSH login username.');
     const host = clone(live); const endpoint = endpointKey(host);
     if (expectedEndpoint && expectedEndpoint !== endpoint) throw new Error('This machine’s connection details changed. Review and create a new forwarding plan instead of restarting the old one.');
-    if ([...this.active.values()].some(record => ['starting', 'running'].includes(record.view.status) && record.view.mode === settings.mode && record.view.listenPort === settings.listenPort && (settings.mode === 'local' || record.endpoint === endpoint))) throw new Error('A forward is already using that listening port. Stop it or choose another port.');
+    if (!settings.autoListen && [...this.active.values()].some(record => ['starting', 'running'].includes(record.view.status) && record.view.mode === settings.mode && record.view.listenPort === settings.listenPort && (settings.mode === 'local' || record.endpoint === endpoint))) throw new Error('A forward is already using that listening port. Stop it or choose another port.');
     if ([...this.active.values()].filter(record => ['starting', 'running'].includes(record.view.status)).length >= 20) throw new Error('Up to 20 forwards can run at once. Stop one before starting another.');
-    const id = crypto.randomUUID(); const record = { endpoint, host, sockets: new Set(), channels: new Set(), stopped: false, view: { id, hostId: host.id, hostName: host.name, mode: settings.mode, targetHost: settings.targetHost, targetPort: settings.targetPort, listenPort: settings.listenPort, note: settings.note, status: 'starting', startedAt: new Date().toISOString() } };
+    const id = crypto.randomUUID(); const record = { endpoint, host, sockets: new Set(), channels: new Set(), stopped: false, view: { id, hostId: host.id, hostName: host.name, mode: settings.mode, targetHost: settings.targetHost, targetPort: settings.targetPort, listenPort: settings.listenPort, ...(settings.autoListen ? { autoListen: true } : {}), note: settings.note, status: 'starting', startedAt: new Date().toISOString() } };
     this.active.set(id, record); this.service.tunnelSetup = (this.service.tunnelSetup || 0) + 1; this.emit();
     try {
+      if (settings.autoListen) { record.view.listenPort = await this.availableLocalPort(record); this.emit(); }
+      if (record.stopped) return this.snapshot();
       if (settings.remember) {
         await this.changeHistory(history => {
-          const prior = history.find(entry => entry.endpoint === endpoint && entry.mode === settings.mode && entry.targetHost === settings.targetHost && entry.targetPort === settings.targetPort && entry.listenPort === settings.listenPort);
+          const prior = history.find(entry => entry.endpoint === endpoint && entry.mode === settings.mode && entry.targetHost === settings.targetHost && entry.targetPort === settings.targetPort && entry.listenPort === record.view.listenPort && !!entry.autoListen === !!settings.autoListen);
           const plan = { ...record.view, id: prior?.id || crypto.randomUUID(), endpoint, lastUsedAt: new Date().toISOString() }; delete plan.status; delete plan.startedAt;
           record.view.historyId = plan.id;
           return [plan, ...history.filter(entry => entry.id !== plan.id)];
@@ -116,6 +119,32 @@ class TunnelManager {
     } catch (error) { if (!record.stopped) await this.fail(record, error.message || 'Forwarding could not be started.'); }
     finally { this.service.tunnelSetup = Math.max(0, (this.service.tunnelSetup || 1) - 1); }
     return this.snapshot();
+  }
+  async availableLocalPort(record) {
+    // A privileged remote service does not require a privileged local listener.
+    const preferred = record.view.targetPort < 1024 ? (record.view.targetPort === 443 ? 8443 : 8080) : record.view.targetPort;
+    const taken = port => [...this.active.values()].some(other => other !== record && other.view.mode === 'local' && ['starting', 'running'].includes(other.view.status) && other.view.listenPort === port);
+    const probe = port => new Promise((resolve, reject) => {
+      const server = this.network.createServer(socket => socket.destroy());
+      server.once('error', error => ['EADDRINUSE', 'EACCES'].includes(error.code) ? resolve(null) : reject(new Error('A local listening port could not be reserved. Check this device’s network permissions.')));
+      server.listen(port, '127.0.0.1', () => {
+        const selected = server.address().port;
+        // Publish the reservation before releasing it so simultaneous starts skip it.
+        record.view.listenPort = selected;
+        server.close(error => error ? reject(error) : resolve(selected));
+      });
+    });
+    for (let offset = 0; offset < 100 && preferred + offset <= 65535; offset++) {
+      if (record.stopped) throw new Error('Forwarding was stopped.');
+      const candidate = preferred + offset;
+      if (taken(candidate)) continue;
+      const selected = await probe(candidate);
+      if (selected) return selected;
+    }
+    if (record.stopped) throw new Error('Forwarding was stopped.');
+    const selected = await probe(0);
+    if (!selected) throw new Error('No local listening port is available. Close an unused service or choose a custom port.');
+    return selected;
   }
   async verifyRemote(record, session) {
     const command = listenerCommand(record.host, record.view.listenPort);
@@ -146,7 +175,8 @@ class TunnelManager {
         buffer = (buffer + bytes.toString('utf8')).slice(-12000);
         if (/forwarding listen address .* overridden|GatewayPorts.*override/i.test(buffer)) { const error = new Error('The SSH server overrode the requested loopback address. Change its GatewayPorts policy before forwarding.'); if (!settled) finish(error); else void this.fail(record, error.message); return; }
         if (/Authenticated to |Authentication succeeded \(/i.test(buffer)) authenticated = true;
-        if (record.view.mode === 'local' ? /Local forwarding listening on 127\.0\.0\.1 port \d+/i.test(buffer) : /remote forward success for:/i.test(buffer)) forwarded = true;
+        if (record.view.mode === 'local' && /bind .*Address already in use|bind .*Permission denied|cannot listen to port/i.test(buffer)) { finish(new Error('The local listening port is unavailable. Choose Automatic port or a different custom port.')); return; }
+        if (record.view.mode === 'local' ? /Local forwarding listening on 127\.0\.0\.1 port \d+/i.test(buffer) && /channel \d+: new port-listener/i.test(buffer) : /remote forward success for:/i.test(buffer)) forwarded = true;
         void ready();
       });
       child.once('error', () => { const error = new Error('OpenSSH could not start. Install the SSH client and check this machine’s key authentication.'); if (!settled) finish(error); else void this.fail(record, error.message); });

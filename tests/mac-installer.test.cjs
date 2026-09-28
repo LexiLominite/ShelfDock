@@ -12,12 +12,12 @@ const execute = promisify(execFile);
 const mac = { skip: process.platform !== 'darwin' };
 async function fixture(t, { password = false, preset = false } = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'dropharbor-installer-test-')));
-  const home = path.join(root, "Mac user's home"); const app = path.join(root, 'DropHarbor.app');
+  const home = path.join(root, "Mac user's home"); const app = path.join(root, 'ShelfDock.app');
   await fs.mkdir(home); await fs.mkdir(path.join(app, 'Contents/MacOS'), { recursive: true }); await fs.mkdir(path.join(app, 'Contents/Resources'));
   const architecture = String((await execute('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64'])).stdout).trim() === '1' ? 'arm64' : 'x64';
   const header = Buffer.alloc(32); header.writeUInt32LE(0xfeedfacf); header.writeUInt32LE(architecture === 'arm64' ? 0x0100000c : 0x01000007, 4); header.writeUInt32LE(2, 12);
-  await fs.writeFile(path.join(app, 'Contents/MacOS/DropHarbor'), header, { mode: 0o755 });
-  const plist = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string><key>CFBundleShortVersionString</key><string>0.4.1</string><key>CFBundleExecutable</key><string>DropHarbor</string></dict></plist>`;
+  await fs.writeFile(path.join(app, 'Contents/MacOS/ShelfDock'), header, { mode: 0o755 });
+  const plist = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string><key>CFBundleShortVersionString</key><string>0.4.1</string><key>CFBundleExecutable</key><string>ShelfDock</string></dict></plist>`;
   await fs.writeFile(path.join(app, 'Contents/Info.plist'), plist);
   await fs.writeFile(path.join(app, 'Contents/Resources/app.asar'), 'fictional packaged app');
   await fs.mkdir(path.join(app, 'Contents/Frameworks/Example.framework/Versions/A'), { recursive: true });
@@ -43,14 +43,14 @@ async function fixture(t, { password = false, preset = false } = {}) {
     passwordAuth: { metadata: () => ({ hasSavedPassword: password }), withPassword: async (h, work) => { calls.push({ kind: 'password', hostId: h.id }); return work(session); } }
   };
   const executor = async (command, args, options) => { calls.push({ kind: 'local', command, args }); return execute(command, args, options); };
-  const installer = new MacInstaller({ service, sourceApp: app, platform: 'darwin', arch: architecture, version: '0.4.1', productName: 'DropHarbor', isPackaged: true, clock: () => now, executor, onChange: state => changes.push(state) });
+  const installer = new MacInstaller({ service, sourceApp: app, platform: 'darwin', arch: architecture, version: '0.4.1', productName: 'ShelfDock', isPackaged: true, clock: () => now, executor, onChange: state => changes.push(state) });
   t.after(async () => { block = null; await installer.shutdown(); await fs.rm(root, { recursive: true, force: true }); });
-  return { root, home, app, host, calls, changes, installer, service, architecture, setNow: value => { now = value; }, setHook: value => { hook = value; }, setBlock: value => { block = value; }, destination: path.join(home, 'Applications/DropHarbor.app') };
+  return { root, home, app, host, calls, changes, installer, service, architecture, setNow: value => { now = value; }, setHook: value => { hook = value; }, setBlock: value => { block = value; }, destination: path.join(home, 'Applications/ShelfDock.app') };
 }
 
 test('capability is unavailable outside a packaged Mac and never invokes executors', () => {
   for (const options of [{ platform: 'linux', isPackaged: true }, { platform: 'win32', isPackaged: true }, { platform: 'darwin', isPackaged: false }, { platform: 'darwin', isPackaged: true, sourceApp: '/tmp/not-app' }]) {
-    const installer = new MacInstaller({ service: {}, sourceApp: '/tmp/DropHarbor.app', arch: 'arm64', ...options, executor: () => assert.fail('No command expected') });
+    const installer = new MacInstaller({ service: {}, sourceApp: '/tmp/ShelfDock.app', arch: 'arm64', ...options, executor: () => assert.fail('No command expected') });
     assert.equal(installer.capabilities().available, false); assert.match(installer.capabilities().reason, /Mac|\.app/); assert.throws(() => installer.preview({ hostId: 'anything' }));
   }
 });
@@ -73,7 +73,7 @@ test('key-auth installation preserves app links, verifies payload, commits once,
   assert.equal(state.operation.status, 'installed', state.operation.message);
   assert.deepEqual(await fs.readFile(path.join(f.destination, 'Contents/Resources/app.asar')), await fs.readFile(path.join(f.app, 'Contents/Resources/app.asar')));
   assert.equal(await fs.readlink(path.join(f.destination, 'Contents/Frameworks/Example.framework/Versions/Current')), 'A');
-  assert.deepEqual(await fs.readdir(path.dirname(f.destination)), ['DropHarbor.app']);
+  assert.deepEqual(await fs.readdir(path.dirname(f.destination)), ['ShelfDock.app']);
   assert.deepEqual(f.changes.map(s => s.operation.status), ['preparing', 'uploading', 'verifying', 'installed']);
   assert.equal(f.service.macInstallation, false); assert.throws(() => f.installer.install({ planId: plan.id }), /already used/);
   const transports = f.calls.filter(c => c.kind === 'transport');
@@ -130,7 +130,7 @@ test('a destination appearing at commit is not overwritten or nested into, and s
     }
     return originalRun(command, args, opts);
   };
-  const plan = await f.installer.preview({ hostId: f.host.id }); const state = await f.installer.install({ planId: plan.id }); assert.equal(state.operation.status, 'failed'); assert.match(state.operation.message, /without replacing/); assert.deepEqual(await fs.readdir(f.destination), ['keep']); assert.deepEqual(await fs.readdir(path.dirname(f.destination)), ['DropHarbor.app']);
+  const plan = await f.installer.preview({ hostId: f.host.id }); const state = await f.installer.install({ planId: plan.id }); assert.equal(state.operation.status, 'failed'); assert.match(state.operation.message, /without replacing/); assert.deepEqual(await fs.readdir(f.destination), ['keep']); assert.deepEqual(await fs.readdir(path.dirname(f.destination)), ['ShelfDock.app']);
 });
 
 test('concurrent operations are refused and shutdown waits for the active operation', mac, async t => {
@@ -142,13 +142,13 @@ test('concurrent operations are refused and shutdown waits for the active operat
 
 test('transfers, authentication, configuration, forwarding setup, and discovery block installation work', mac, async t => {
   const f = await fixture(t);
-  for (const field of ['transferring', 'authenticationSetup', 'configurationImport', 'tunnelSetup', 'scanPromise', 'probePromise', 'macInstallation']) { f.service[field] = true; assert.throws(() => f.installer.preview({ hostId: f.host.id }), /Wait/); f.service[field] = false; }
+  for (const field of ['transferring', 'authenticationSetup', 'configurationImport', 'configurationSaving', 'tunnelSetup', 'scanPromise', 'probePromise', 'macInstallation']) { f.service[field] = true; assert.throws(() => f.installer.preview({ hostId: f.host.id }), /Wait/); f.service[field] = false; }
   assert.equal(f.calls.length, 0);
 });
 
 test('an unrelated destination lock is preserved and blocks commit without replacing an app', mac, async t => {
   const f = await fixture(t); const crypto = require('node:crypto');
-  const lock = path.join(f.home, 'Applications', '.dropharbor-install-' + crypto.createHash('sha256').update('DropHarbor.app').digest('hex').slice(0, 16) + '.lock');
+  const lock = path.join(f.home, 'Applications', '.dropharbor-install-' + crypto.createHash('sha256').update('ShelfDock.app').digest('hex').slice(0, 16) + '.lock');
   await fs.mkdir(lock, { recursive: true }); await fs.writeFile(path.join(lock, '.owner'), 'another-installer');
   const plan = await f.installer.preview({ hostId: f.host.id }); const state = await f.installer.install({ planId: plan.id });
   assert.equal(state.operation.status, 'failed'); assert.match(state.operation.message, /destination lock/); assert.equal(await fs.readFile(path.join(lock, '.owner'), 'utf8'), 'another-installer');

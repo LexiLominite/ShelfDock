@@ -1,7 +1,10 @@
 'use strict';
+const http = require('node:http');
+const https = require('node:https');
 const { endpointKey } = require('./password-auth.cjs');
 
 function assertTunnelSiteEndpoint(record, host) {
+  if (record?.stopped) throw new Error('This local forward is not running. Connect it before opening the site.');
   if (!record || !host || record.view.hostId !== host.id || record.endpoint !== endpointKey(host)) {
     throw new Error('This machine’s connection details changed or it was removed. Stop this forward, then reconnect using the current machine settings.');
   }
@@ -34,4 +37,34 @@ function tunnelSiteURL(request, state) {
   return url.href;
 }
 
-module.exports = { tunnelSiteURL, assertTunnelSiteEndpoint };
+// Probe through the owned loopback tunnel; never resolve or contact the supplied
+// remote destination from this machine. HEAD reads headers only and does not
+// follow redirects or load page resources. Any HTTP status proves reachability.
+function verifyTunnelSite(url, record, { timeout = 6000, requestHttp = http.request, requestHttps = https.request } = {}) {
+  const target = new URL(url);
+  if (!['http:', 'https:'].includes(target.protocol) || target.hostname !== '127.0.0.1' || target.username || target.password) return Promise.reject(new Error('Website checks must use this local forward.'));
+  const destination = `${record?.view?.targetHost || 'the destination'}:${record?.view?.targetPort || 'port'}`;
+  const machine = record?.view?.hostName || 'the selected machine';
+  return new Promise((resolve, reject) => {
+    let settled = false; let request;
+    const finish = error => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); request?.destroy(); error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(() => finish(new Error(`The website at ${destination} did not respond through ${machine}. Check that the service is running there and that the URL uses the correct port and HTTP or HTTPS.`)), timeout);
+    const fail = error => {
+      const certificate = /CERT|TLS|SSL|SELF_SIGNED/i.test(error?.code || '');
+      finish(new Error(certificate ? `The HTTPS certificate could not be verified through the local address. Check the service certificate or use the HTTP address provided by ${machine}.` : `The website at ${destination} could not be reached from ${machine}. Start the service on that machine and check its address, port, and HTTP or HTTPS setting.`));
+    };
+    try {
+      request = (target.protocol === 'https:' ? requestHttps : requestHttp)(target, { method: 'HEAD', agent: false, headers: { Connection: 'close' } }, response => {
+        response.on('error', fail);
+        if (!Number.isInteger(response.statusCode) || response.statusCode < 100 || response.statusCode > 599) { response.destroy(); fail(); return; }
+        response.destroy(); finish();
+      });
+      request.on('error', fail); request.end();
+    } catch (error) { fail(error); }
+  });
+}
+
+module.exports = { tunnelSiteURL, assertTunnelSiteEndpoint, verifyTunnelSite };

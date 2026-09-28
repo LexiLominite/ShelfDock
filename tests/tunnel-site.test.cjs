@@ -36,3 +36,25 @@ test('only a running local forward can launch its site', () => {
     assert.throws(() => tunnelSiteURL(request, { active: [{ ...state.active[0], listenPort }] }), /invalid listening port/);
   }
 });
+
+test('website readiness accepts error and redirect HTTP statuses without following redirects or reading bodies', async t => {
+  const http = require('node:http'); const { verifyTunnelSite } = require('../desktop/tunnel-site.cjs');
+  const seen = [];
+  const server = http.createServer((request, response) => { seen.push({ method: request.method, url: request.url }); response.writeHead(Number(request.url.slice(1).split('?')[0]), { Location: 'http://should-never-be-contacted.invalid/' }); response.end(); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  const port = server.address().port; const record = { view: { targetHost: 'localhost', targetPort: 8000, hostName: 'Fixture machine' } };
+  for (const status of [200, 302, 401, 404, 405, 500]) await verifyTunnelSite(`http://127.0.0.1:${port}/${status}?temporary=1#fragment`, record);
+  assert.equal(seen.length, 6); assert.ok(seen.every(request => request.method === 'HEAD')); assert.equal(seen[0].url, '/200?temporary=1');
+});
+
+test('website readiness refuses non-loopback probes and reports refused and unresponsive services without URL secrets', async t => {
+  const net = require('node:net'); const { verifyTunnelSite } = require('../desktop/tunnel-site.cjs');
+  const record = { view: { targetHost: '192.168.1.2', targetPort: 8000, hostName: 'Remote fixture' } };
+  await assert.rejects(verifyTunnelSite('http://192.168.1.2:8000/', record), /local forward/);
+  const sockets = new Set(); const server = net.createServer(socket => { sockets.add(socket); socket.on('error', () => {}); socket.once('close', () => sockets.delete(socket)); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); const port = server.address().port;
+  t.after(async () => { for (const socket of sockets) socket.destroy(); if (server.listening) await new Promise(resolve => server.close(resolve)); });
+  await assert.rejects(verifyTunnelSite(`http://127.0.0.1:${port}/?private-secret=1`, record, { timeout: 40 }), error => /did not respond.*Remote fixture/.test(error.message) && !error.message.includes('private-secret'));
+  for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve));
+  await assert.rejects(verifyTunnelSite(`http://127.0.0.1:${port}/?private-secret=1`, record), error => /192\.168\.1\.2:8000.*Remote fixture/.test(error.message) && !error.message.includes('private-secret'));
+});

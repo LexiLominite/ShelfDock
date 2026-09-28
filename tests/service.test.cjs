@@ -139,7 +139,7 @@ test('deliberate send creates a unique Desktop batch, quotes hostile paths, reco
   const mkdir = calls.find(call => call.command === 'ssh' && call.args.at(-1).includes('umask'));
   assert.ok(mkdir.args.at(-1).includes("'Desktop/A'\\''s $(touch nope)'"));
   assert.match(mkdir.args.at(-1), /mkdir -- "\$target"/);
-  const transfers = calls.filter(call => call.command === 'scp'); assert.equal(transfers.length, 2);
+  const transfers = calls.filter(call => call.command === 'scp' && !path.basename(call.args.at(-2)).startsWith('.dropharbor-receipt-')); assert.equal(transfers.length, 2);
   assert.ok(transfers[0].args.includes(file));
   assert.ok(transfers[0].args.at(-1).includes("report'\\''s $(touch nope).txt'"));
   assert.ok(transfers[0].args.includes('-O'));
@@ -216,6 +216,22 @@ test('Windows destinations use encoded literal paths, redirected Desktop, and SF
   assert.equal(scp.args.at(-1), "me@192.168.1.22:C:/Users/me/OneDrive/Desktop/Drift-test/report's & hello.txt");
   const hostile = service.windowsDestinationCommand("C:/Users/me/A'; Write-Output bad; #", 'batch');
   assert.ok(Buffer.from(hostile.split(' ').at(-1), 'base64').toString('utf16le').includes("'C:/Users/me/A''; Write-Output bad; #'"));
+  const promotion = calls.filter(call => call.command === 'ssh' && call.args.at(-1).startsWith('powershell.exe')).at(-1).args.at(-1);
+  const promotionScript = Buffer.from(promotion.split(' ').at(-1), 'base64').toString('utf16le');
+  assert.match(promotionScript, /\[IO.File\]::Move\(/);
+  assert.ok(promotionScript.includes('/.dropharbor-receipt.json'));
+  assert.ok(promotion.length < 4096, 'receipt JSON travels as a file, avoiding Windows command length limits');
+  assert.equal(state.history[0].receiptPublished, true);
+});
+
+test('an app update lock rejects queued shelf mutations and machine or preference changes', async t => {
+  const { service } = await fixture(t);
+  let release; const gate = new Promise(resolve => { release = resolve; }); service.shelfMutation = gate;
+  const pending = service.enqueueText('must wait for update'); service.appUpdating = true;
+  const rejected = assert.rejects(pending, /app update/); release(); await rejected;
+  await assert.rejects(service.saveHost({ address: 'device.invalid', user: 'fixture' }), /app update/);
+  await assert.rejects(service.updateSettings({ deviceName: 'Changed' }), /app update/);
+  assert.equal((await service.getState()).items.length, 0);
 });
 
 test('old OpenSSH clients refuse Windows SFTP transfer and invalid Windows filenames are rejected', async t => {
@@ -348,7 +364,7 @@ test('multi-machine transfer runs at most two destinations concurrently, preserv
   for (const receipt of state.history) assert.deepEqual(receipt.itemIds, itemIds);
   assert.equal(new Set(state.history.map(receipt => receipt.batchId)).size, 1);
   assert.equal(calls.filter(call => call.command === 'ssh' && call.args.at(-1) === 'echo DRIFT_READY').length, 3);
-  assert.equal(transfers, 5); // Two files to each successful target; the other fails on its first file.
+  assert.equal(transfers, 7); // Two payloads plus a completion marker for each success; one payload fails.
 });
 
 test('multi-machine preflight rejects stale or duplicate selections before starting a transfer', async t => {
@@ -425,4 +441,35 @@ test('discovery rechecks a Mac installation lock after waiting for the other dis
     if (kind === 'refresh') service.probePromise = null; else service.scanPromise = null;
     release(); await assert.rejects(pending, /Mac installation/); assert.equal(calls.length, 0); service.macInstallation = false;
   }
+});
+
+
+test('a per-machine SSH check does not attempt unrelated saved passwords', async t => {
+  const { service, calls } = await fixture(t);
+  await service.saveHost({ name: 'Chosen', address: 'chosen.example.test', user: 'me' });
+  await service.saveHost({ name: 'Other', address: 'other.example.test', user: 'me' });
+  service.state.environment.sshAvailable = true;
+  const chosen = service.state.hosts.find(host => host.name === 'Chosen');
+  const other = service.state.hosts.find(host => host.name === 'Other');
+  let passwordAttempts = 0;
+  service.passwordAuth.metadata = host => ({ hasSavedPassword: host.id === other.id });
+  service.passwordAuth.withPassword = async () => { passwordAttempts++; throw new Error('Authentication failed'); };
+  const state = await service.probeHosts({ hostId: chosen.id });
+  assert.equal(state.hosts.find(host => host.id === chosen.id).status, 'ready');
+  assert.equal(state.hosts.find(host => host.id === other.id).status, 'unknown');
+  assert.equal(passwordAttempts, 0);
+  assert.equal(calls.filter(call => call.command === 'ssh' && call.args.at(-1) === 'echo DRIFT_READY').length, 1);
+  await assert.rejects(service.probeHosts({ hostId: 'missing' }), /existing machine/);
+});
+
+test('invisible filename direction controls fail before uploading a batch', async t => {
+  const { service, directory, calls } = await fixture(t);
+  const hostId = await readyHost(service);
+  const filename = path.join(directory, 'report\u202e.txt');
+  await fs.writeFile(filename, 'ordinary file');
+  const state = await service.enqueueFiles([filename]);
+  const result = await service.send({ hostId, itemIds: state.items.map(item => item.id) });
+  assert.equal(result.history[0].status, 'failed');
+  assert.match(result.history[0].message, /Rename it before sending/);
+  assert.equal(calls.some(call => call.command === 'scp'), false);
 });

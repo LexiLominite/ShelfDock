@@ -42,14 +42,14 @@ function liveWorker(endpoint, background) {
       client.destroy();
       if (error) reject(error); else resolve();
     };
-    client.setTimeout(SOCKET_TIMEOUT_MS, () => finish(new Error('An existing lex-drift worker did not respond. Quit that worker before starting another.')));
+    client.setTimeout(SOCKET_TIMEOUT_MS, () => finish(new Error('An existing ShelfDock or LexBridge worker did not respond. Quit that worker before starting another.')));
     client.once('connect', () => client.write(background ? 'PING\n' : 'SHOW\n'));
     client.on('data', chunk => {
       response = Buffer.concat([response, chunk]);
       if (response.length > MAX_MESSAGE_BYTES) { finish(new Error('The shared worker returned an invalid response.')); return; }
       if (response.includes(10)) {
         if (response.toString('utf8') === ACK) finish();
-        else finish(new Error('Another program is using the lex-drift worker endpoint.'));
+        else finish(new Error('Another program is using the shared app worker endpoint.'));
       }
     });
     client.once('error', finish);
@@ -124,7 +124,7 @@ async function acquireWorker({ runtimeDir, onShow = () => {}, background = false
       if (server.listening) await new Promise(resolve => server.close(() => resolve()));
       if (error.code !== 'EADDRINUSE') throw error;
       const before = process.platform === 'win32' ? null : await socketStat(endpoint);
-      if (before && !ownSocket(before)) throw new Error('The lex-drift worker endpoint is not an owned socket; it was left untouched.');
+      if (before && !ownSocket(before)) throw new Error('The shared app worker endpoint is not an owned socket; it was left untouched.');
       try {
         await liveWorker(endpoint, background);
         return { primary: false, async close() {} };
@@ -138,7 +138,7 @@ async function acquireWorker({ runtimeDir, onShow = () => {}, background = false
           if (connectionError.code !== 'ECONNREFUSED') throw connectionError;
           const current = await socketStat(endpoint);
           if (!current) { await delay(15); continue; }
-          if (!ownSocket(before) || !ownSocket(current)) throw new Error('The lex-drift worker endpoint is not an owned socket; it was left untouched.');
+          if (!ownSocket(before) || !ownSocket(current)) throw new Error('The shared app worker endpoint is not an owned socket; it was left untouched.');
           if (before.dev !== current.dev || before.ino !== current.ino) { await delay(15); continue; }
           // A successful connection is the only permission to reuse a worker;
           // refused connections plus a stable, owned socket identify a crash.
@@ -148,7 +148,7 @@ async function acquireWorker({ runtimeDir, onShow = () => {}, background = false
       }
     }
   }
-  throw new Error('The lex-drift shared worker is busy starting. Try launching it again.');
+  throw new Error('The shared app worker is busy starting. Try launching it again.');
 }
 
 module.exports = { acquireWorker, workerEndpoint, MAX_MESSAGE_BYTES };

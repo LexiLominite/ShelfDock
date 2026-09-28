@@ -201,3 +201,35 @@ test('an older concurrent Stop reply cannot resurrect another session that was s
   earlier.resolve({ active: [running({ id: 'b' })], history: [] }); await first;
   assert.deepEqual(applied, [empty]);
 });
+
+test('simple quick defaults never inherit reverse or non-website history and retain a usable website per host', async () => {
+  const { quickConnectDefaults, rememberSitePreferences } = await api;
+  const website = { ...plan, id: 'usable-default', targetPort: 8000, listenPort: 8001, autoListen: true };
+  rememberSitePreferences(website, { scheme: 'http:', path: '/app?session=transient#panel' });
+  const history = [website, { ...plan, id: 'unknown-db', targetPort: 5432, lastUsedAt: '2026-10-01' }, { ...plan, id: 'newest-reverse', mode: 'remote', lastUsedAt: '2026-11-01' }];
+  const basic = quickConnectDefaults({ history }, 'studio', { mode: 'remote' });
+  assert.equal(basic.mode, 'local'); assert.equal(basic.saved.id, website.id); assert.equal(basic.address, 'http://localhost:8000/app?session=transient#panel');
+  assert.equal(quickConnectDefaults({ history }, 'other').address, 'http://localhost:8000');
+  const reverse = quickConnectDefaults({ history }, 'studio', { mode: 'remote', advanced: true });
+  assert.equal(reverse.mode, 'remote'); assert.equal(reverse.saved.id, 'newest-reverse');
+});
+
+test('automatic quick plans match their actual allocated listener without inheriting custom port policy', async () => {
+  const { quickPlanForUrl, parseQuickUrl, activeForPlan, startQuickForward } = await api;
+  const automatic = quickPlanForUrl({ hostId: 'studio', site: parseQuickUrl('192.168.1.2:8000/a?q=1#x'), autoListen: true });
+  assert.equal(automatic.mode, 'local'); assert.equal(automatic.targetHost, '192.168.1.2'); assert.equal(automatic.autoListen, true);
+  assert.equal(activeForPlan({ active: [{ ...automatic, id: 'allocated', listenPort: 8002, status: 'running' }] }, automatic).listenPort, 8002);
+  assert.equal(activeForPlan({ active: [{ ...automatic, autoListen: undefined, status: 'running' }] }, automatic), null);
+  let opened;
+  const bridge = { startTunnel: async request => ({ active: [{ ...request, id: 'allocated', listenPort: 8002, status: 'running' }], history: [] }), openTunnelSite: async request => { opened = request; return { url: 'http://127.0.0.1:8002/a?q=1#x' }; } };
+  const result = await startQuickForward({ bridge, plan: automatic, site: parseQuickUrl('192.168.1.2:8000/a?q=1#x'), snapshot: empty });
+  assert.equal(result.entry.listenPort, 8002); assert.equal(result.url, 'http://127.0.0.1:8002/a?q=1#x'); assert.deepEqual(opened, { id: 'allocated', scheme: 'http:', path: '/a?q=1#x' });
+});
+
+test('unreachable website attempts do not replace the last known usable site', async () => {
+  const { startQuickForward, latestWebsitePlan } = await api;
+  const saved = { ...plan, id: 'unreachable-site' };
+  const bridge = { startTunnel: async () => ({ active: [running({ historyId: saved.id })], history: [saved] }), openTunnelSite: async () => { throw new Error('Service is not listening.'); } };
+  const result = await startQuickForward({ bridge, plan: saved, site, snapshot: empty });
+  assert.match(result.error, /not listening/); assert.equal(latestWebsitePlan({ history: [saved] }, 'studio'), null);
+});

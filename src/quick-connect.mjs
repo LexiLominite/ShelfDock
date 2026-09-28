@@ -43,19 +43,30 @@ export function latestSavedPlan(snapshot, hostId, mode = 'local') {
   return (snapshot?.history || []).filter(plan => plan.hostId === hostId && plan.mode === mode).reduce((latest, plan) => !latest || (Date.parse(plan.lastUsedAt) || 0) > (Date.parse(latest.lastUsedAt) || 0) ? plan : latest, null);
 }
 
+export function latestWebsitePlan(snapshot, hostId, storage = globalThis.localStorage) {
+  return latestSavedPlan({ history: (snapshot?.history || []).filter(plan => sitePreferences(plan, storage).known) }, hostId, 'local');
+}
+
+export function quickConnectDefaults(snapshot, hostId, { mode = 'local', advanced = false } = {}) {
+  const direction = advanced && mode === 'remote' ? 'remote' : 'local';
+  const saved = advanced ? latestSavedPlan(snapshot, hostId, direction) : latestWebsitePlan(snapshot, hostId);
+  return { mode: direction, saved, address: saved ? urlForPlan(saved) : 'http://localhost:8000' };
+}
+
 export function sameForward(left, right) {
-  return !!left && !!right && ['hostId', 'mode', 'targetHost', 'targetPort', 'listenPort'].every(key => String(left[key]) === String(right[key]));
+  return !!left && !!right && !!left.autoListen === !!right.autoListen && ['hostId', 'mode', 'targetHost', 'targetPort'].every(key => String(left[key]) === String(right[key])) &&
+    ((left.autoListen === true && right.autoListen === true) || String(left.listenPort) === String(right.listenPort));
 }
 
 export function activeForPlan(snapshot, plan) {
   return (snapshot?.active || []).find(entry => sameForward(entry, plan) && liveStatuses.has(entry.status)) || null;
 }
 
-export function quickPlanForUrl({ hostId, mode = 'local', site, targetPort, listenPort, savedPlan, remember = true, note = '' }) {
+export function quickPlanForUrl({ hostId, mode = 'local', site, targetPort, listenPort, savedPlan, remember = true, note = '', autoListen = false }) {
   if (!hostId) throw new Error('Choose a machine before connecting.');
   if (!['local', 'remote'].includes(mode)) throw new Error('Choose Local or Remote forwarding.');
   const destinationPort = portNumber(targetPort ?? site.targetPort, 'Destination port');
-  return { hostId, mode, targetHost: site.targetHost, targetPort: destinationPort, listenPort: portNumber(listenPort || savedPlan?.listenPort || destinationPort, 'Listening port'), remember, note };
+  return { hostId, mode, targetHost: site.targetHost, targetPort: destinationPort, listenPort: portNumber(listenPort || savedPlan?.listenPort || destinationPort, 'Listening port'), remember, note, ...(mode === 'local' && autoListen ? { autoListen: true } : {}) };
 }
 
 function planKey(plan) {
@@ -106,7 +117,7 @@ export function localSiteUrl(entry, site) {
 
 export async function openForwardSite({ bridge, entry, site }) {
   if (entry?.mode !== 'local' || !runningStatuses.has(entry.status) || !site?.known || typeof bridge?.openTunnelSite !== 'function') return {};
-  try { return await bridge.openTunnelSite({ id: entry.id, scheme: site.scheme, path: site.path || '/' }); }
+  try { return await bridge.openTunnelSite({ id: entry.id, scheme: site.scheme, path: site.path || '/' }) || {}; }
   catch (error) { return { error: `Forward is live. ${error.message || 'The website could not be opened.'}`, errorKind: 'open' }; }
 }
 
@@ -116,8 +127,9 @@ async function runForward({ bridge, method, value, plan, site, snapshot, onSnaps
   const current = activeForPlan(snapshot, plan);
   if (current) {
     const saved = (snapshot.history || []).find(item => item.id === current.historyId) || (snapshot.history || []).find(item => sameForward(item, plan));
-    if (saved && site?.known) rememberSitePreferences(saved, site);
-    return { snapshot, entry: current, site, needsUrl: !site?.known, ...await (open && !isCancelled?.() ? openForwardSite({ bridge, entry: current, site }) : {}) };
+    const opened = await (open && !isCancelled?.() ? openForwardSite({ bridge, entry: current, site }) : {});
+    if (saved && site?.known && !opened.error) rememberSitePreferences(saved, site);
+    return { snapshot, entry: current, site, needsUrl: !site?.known, ...opened };
   }
   if (state.pending) return { pending: true };
   const version = ++state.version;
@@ -131,8 +143,9 @@ async function runForward({ bridge, method, value, plan, site, snapshot, onSnaps
     if (!entry) return { snapshot: next, error: 'The forwarding session did not start. Check its status and try again.' };
     if (entry.status === 'failed' || entry.error) return { snapshot: next, entry, site, error: entry.error || 'SSH forwarding failed. Check the connection settings and try again.' };
     const saved = (next.history || []).find(item => item.id === entry.historyId) || (next.history || []).find(item => sameForward(item, plan));
-    if (saved && site?.known) rememberSitePreferences(saved, site);
-    return { snapshot: next, entry, site, needsUrl: !site?.known, ...await (open && !isCancelled?.() ? openForwardSite({ bridge, entry, site }) : {}) };
+    const opened = await (open && !isCancelled?.() ? openForwardSite({ bridge, entry, site }) : {});
+    if (saved && site?.known && !opened.error) rememberSitePreferences(saved, site);
+    return { snapshot: next, entry, site, needsUrl: !site?.known, ...opened };
   } catch (error) { return version === state.version ? { error: error.message || 'Could not start forwarding. Check SSH access and try again.' } : { superseded: true }; }
   finally { state.pending = false; onBusyChange?.(false); }
 }

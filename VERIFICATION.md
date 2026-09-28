@@ -1,3 +1,27 @@
+# ShelfDock / LexBridge 0.5.0 verification
+
+Recorded on 2026-09-28. The public edition is ShelfDock; the private personal edition is LexBridge. Earlier records below retain their original product and version names.
+
+- **311 Node checks passed** with no skipped tests. Coverage includes Received metadata validation/persistence, actual trusted OpenSSH/SCP loopback delivery into a second controller, edition-specific update feeds, private GitHub CLI transport, cancellation, hostile archive rejection, profile-drain guards, portable updater fixture replacement/recovery, one-session installation confirmation, obsolete update-journal cleanup missing-platform automatic-download guards, corrupt-cache recovery, durable settings saves, per-machine access isolation through the production preload bridge and filename validation before upload.
+- **Headless UI checks passed** for machine actions, exact drag/drop and batches, forwarding, shelf Undo, optional Clipboard, Mac installation review, Received and Updates. Final GPT-6 Luna xhigh checks passed the affected machine/forwarding, focus and onboarding flows after the last functional fixes. Compact, Balanced and Expanded retain closed device details; no new arrival or update opens a native app window. See [0.5 screenshots](docs/v050/README.md).
+- **67 rendered palette contrast checks passed**, reusing the original lavender/purple tokens and green/amber status system. This is targeted testing, not a whole-app accessibility certification.
+- The standalone landing page passed interaction and no-JavaScript checks at 1440, 1024, 768, 390 and 320 pixels, with no horizontal overflow, browser errors, external tracking or network requests. GitHub Pages deployment is configured for `shelfdock.lexilominite.com`; deployment and HTTPS availability are checked separately.
+- Forwarding was exercised against an existing trusted remote Mac using the production tunnel manager: occupied local port 8000 selected 8001 and returned the remote HTTP response; remote port 80 selected local 8080 and returned HTTP 200. Stop released both owned listeners. The browser adapter was not opened during this quiet test.
+- First-run quick start is four short, skippable steps; Settings offers replay and a feature guide. It does not enable Clipboard, send items, or start connections.
+- Grok 4.7 reviewed the two-device, update, whole-UI and naming plans. The observed backing model was `grok-4.7-build`. Grok also performs renderer compilation and platform packaging. [Design decisions](docs/design-v050.md) distinguish advice from adopted behavior.
+
+For every release, package verification additionally compares embedded application code, renderer assets, dependency closure, executable architecture, edition identity and private-preset inclusion/absence. Source ZIPs are created from the frozen release commit and GitHub uploads are compared to local SHA-256 values before publication. Those build/upload checks are recorded separately from source tests.
+
+## Practical limits
+
+- Received discovers Desktop batches created by 0.5+, including redirected Windows Desktops; custom destination folders and older transfers do not appear automatically. Delivered does not mean read by another person.
+- Update tests exercise a real detached replacement helper against temporary fixture applications. Native Windows/PowerShell execution, Linux desktop relaunch, and an actual future-version Mac update remain separate platform tests. The installed local app is verified separately after upgrade.
+- The updater preserves a backup and rolls back failed swaps or launcher-command failures. It does not automatically recover an app that starts and later crashes. Unsigned packages remain subject to operating-system prompts and security policy.
+- Private LexBridge updates require an existing authenticated GitHub CLI on that device. Automatic checks/downloads remain off until enabled. Public and personal editions have separate update consent and cache.
+- A real remote-Mac deployment is not implied by installer-source, mocked UI, or package checks. Native Windows/Linux sender and receiver UX still need device validation. Mac ARM64, Windows x64 and Linux ARM64/x64 are the release targets.
+
+## Historical verification
+
 # DropHarbor / lex-drift v0.4.2 verification
 
 Version 0.4.2 makes Clipboard opt-in after upgrades as well as new installs, moves installation into the selected machine’s menu, and replaces the confusing default Local headline with Remote service. See [workflow notes and screenshots in all three densities](docs/optional-tools.md).

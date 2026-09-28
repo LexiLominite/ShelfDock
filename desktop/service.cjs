@@ -9,9 +9,10 @@ const { execFile: nodeExecFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { validateClipboardPNG } = require('./clipboard.cjs');
 const { PasswordAuth, endpointKey, validatePassword } = require('./password-auth.cjs');
+const { RECEIPT_NAME, encodeManifest } = require('./received.cjs');
 
 const execFileAsync = promisify(nodeExecFile);
-const DEFAULT_SETTINGS = Object.freeze({ shakeEnabled: true, sensitivity: 'strong', sendImmediately: false, viewMode: 'expanded' });
+const DEFAULT_SETTINGS = Object.freeze({ shakeEnabled: true, sensitivity: 'strong', sendImmediately: false, viewMode: 'expanded', deviceName: '' });
 const DEFAULT_DESTINATION = '~/Desktop';
 const PUBLIC_HOST_FIELDS = ['id', 'name', 'address', 'user', 'port', 'identityFile', 'sshAlias', 'route', 'source', 'destination', 'status', 'error', 'os', 'online'];
 const clone = (value) => JSON.parse(JSON.stringify(value));
@@ -145,6 +146,7 @@ class DriftService {
     if ('shakeEnabled' in patch) { if (typeof patch.shakeEnabled !== 'boolean') throw new Error('Invalid shake setting.'); settings.shakeEnabled = patch.shakeEnabled; }
     if ('sensitivity' in patch) { if (!['gentle', 'normal', 'strong'].includes(patch.sensitivity)) throw new Error('Invalid shake sensitivity.'); settings.sensitivity = patch.sensitivity; }
     if ('viewMode' in patch) { if (!['compact', 'expanded', 'large'].includes(patch.viewMode)) throw new Error('Choose Compact, Expanded, or Large view.'); settings.viewMode = patch.viewMode; }
+    if ('deviceName' in patch) { if (typeof patch.deviceName !== 'string' || patch.deviceName.trim().length > 64 || hasControl(patch.deviceName) || /[\u202a-\u202e\u2066-\u2069]/.test(patch.deviceName)) throw new Error('Device name must be a single line of up to 64 characters.'); settings.deviceName = patch.deviceName.trim(); }
     if ('sendImmediately' in patch) { if (typeof patch.sendImmediately !== 'boolean') throw new Error('Invalid send setting.'); settings.sendImmediately = patch.sendImmediately; }
     return settings;
   }
@@ -156,15 +158,21 @@ class DriftService {
     return state;
   }
   emit() { try { this.onChange(this.decoratedState()); } catch {} }
-  async persist() {
-    const serialized = JSON.stringify({ version: 1, manualHosts: this.manualHosts, overrides: this.overrides, hiddenHosts: this.hiddenHosts, items: this.state.items, pendingClear: this.pendingClear, clearCleanup: this.clearCleanup, history: this.state.history.slice(0, 100), settings: this.state.settings }, null, 2);
+  async persist(configuration = null) {
     this.writeChain = this.writeChain.catch(() => {}).then(async () => {
+      // Read committed state when this write starts so a queued write cannot undo a just-saved configuration.
+      const manualHosts = configuration?.manualHosts ?? this.manualHosts, overrides = configuration?.overrides ?? this.overrides, hiddenHosts = configuration?.hiddenHosts ?? this.hiddenHosts, settings = configuration?.settings ?? this.state.settings;
+      const serialized = JSON.stringify({ version: 1, manualHosts, overrides, hiddenHosts, items: this.state.items, pendingClear: this.pendingClear, clearCleanup: this.clearCleanup, history: this.state.history.slice(0, 100), settings }, null, 2);
       const temporary = path.join(this.dataDir, 'state-' + crypto.randomUUID() + '.tmp');
       await fs.writeFile(temporary, serialized, { mode: 0o600 }); await fs.rename(temporary, path.join(this.dataDir, 'state.json'));
+      if (configuration) {
+        this.manualHosts = manualHosts; this.overrides = overrides; this.hiddenHosts = hiddenHosts; this.state.settings = settings;
+        if (configuration.hosts) this.state.hosts = configuration.hosts;
+      }
     }); await this.writeChain;
   }
   async getState() { await this.initialized; await this.passwordAuth.initialized; return this.decoratedState(); }
-  assertConfigurationIdle() { if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); }
+  assertConfigurationIdle() { if (this.appUpdating) throw new Error('Wait for the app update to finish.'); if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); if (this.configurationSaving) throw new Error('Wait for machine settings to finish saving.'); }
   mutateShelf(operation) {
     const next = this.shelfMutation.catch(() => {}).then(async () => {
       await this.initialized;
@@ -173,6 +181,15 @@ class DriftService {
     });
     this.shelfMutation = next;
     return next;
+  }
+  mutateConfiguration(operation) {
+    return this.mutateShelf(async () => {
+      this.configurationSaving = true;
+      try {
+        await Promise.all([this.scanPromise, this.probePromise].filter(Boolean));
+        return await operation();
+      } finally { this.configurationSaving = false; }
+    });
   }
   async run(command, args, options = {}) { return this.executor(command, args, { timeout: 8000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, ...options }); }
   async resolveAlias(alias) { return parseSSHConfig((await this.run('ssh', ['-G', alias])).stdout); }
@@ -271,7 +288,7 @@ class DriftService {
     if (host.sshAlias) args.push('-o', 'HostName=' + host.address);
     args.push(host.sshAlias || host.address); return args;
   }
-  async probeHosts({ automatic = false } = {}) {
+  async probeHosts({ automatic = false, hostId } = {}) {
     await this.initialized;
     this.assertConfigurationIdle();
     if (this.transferring) throw new Error('Wait for the current transfer to finish before checking machines.');
@@ -282,10 +299,11 @@ class DriftService {
     if (!this.state.environment.sshAvailable) await this.refreshHosts();
     this.assertConfigurationIdle();
     if (this.probePromise) return this.probePromise;
-    this.probePromise = this.checkHosts({ automatic }).finally(() => { this.probePromise = null; }); return this.probePromise;
+    this.probePromise = this.checkHosts({ automatic, hostId }).finally(() => { this.probePromise = null; }); return this.probePromise;
   }
-  async checkHosts({ automatic = false } = {}) {
-    const hosts = this.state.hosts.slice();
+  async checkHosts({ automatic = false, hostId } = {}) {
+    if (hostId !== undefined && (typeof hostId !== 'string' || !this.state.hosts.some(host => host.id === hostId))) throw new Error('Choose an existing machine to check.');
+    const hosts = this.state.hosts.filter(host => hostId === undefined || host.id === hostId);
     await mapLimit(hosts, 4, async host => {
       if (automatic && this.passwordAuth.metadata(host).hasSavedPassword) return;
       if (!host.user) { host.status = 'auth-required'; host.error = 'Add this machine’s SSH login username and authentication settings.'; this.emit(); return; }
@@ -304,31 +322,35 @@ class DriftService {
     return this.getState();
   }
   async saveHost(payload) {
-    await this.initialized;
-    this.assertConfigurationIdle();
-    if (this.transferring) throw new Error('Wait for the current transfer to finish before editing machines.');
-    const current = this.state.hosts.find(host => host.id === payload.id);
-    const host = validateHost({ ...current, ...payload, source: current ? current.source : 'Manual', id: current ? current.id : 'manual-' + crypto.randomUUID(), status: 'unknown' }, { manual: true });
-    if (current && current.source !== 'Manual') this.overrides[host.id] = Object.fromEntries(PUBLIC_HOST_FIELDS.filter(key => !['status', 'error', 'online', 'source'].includes(key)).map(key => [key, host[key]]));
-    else { host.source = 'Manual'; this.manualHosts = [...this.manualHosts.filter(existing => existing.id !== host.id), host]; }
-    this.hiddenHosts = this.hiddenHosts.filter(id => id !== host.id);
-    this.state.hosts = [...this.state.hosts.filter(existing => existing.id !== host.id && identityFor(existing) !== identityFor(host)), host].sort((a, b) => a.name.localeCompare(b.name));
-    await this.persist();
-    if (current && endpointKey(current) !== endpointKey(host)) await this.passwordAuth.forget(current);
-    this.emit(); return this.getState();
+    return this.mutateConfiguration(async () => {
+      if (this.transferring) throw new Error('Wait for the current transfer to finish before editing machines.');
+      const current = this.state.hosts.find(host => host.id === payload.id);
+      const host = validateHost({ ...current, ...payload, source: current ? current.source : 'Manual', id: current ? current.id : 'manual-' + crypto.randomUUID(), status: 'unknown' }, { manual: true });
+      let manualHosts = this.manualHosts, overrides = this.overrides;
+      if (current && current.source !== 'Manual') overrides = { ...overrides, [host.id]: Object.fromEntries(PUBLIC_HOST_FIELDS.filter(key => !['status', 'error', 'online', 'source'].includes(key)).map(key => [key, host[key]])) };
+      else { host.source = 'Manual'; manualHosts = [...manualHosts.filter(existing => existing.id !== host.id), host]; }
+      const hiddenHosts = this.hiddenHosts.filter(id => id !== host.id);
+      const hosts = [...this.state.hosts.filter(existing => existing.id !== host.id && identityFor(existing) !== identityFor(host)), host].sort((a, b) => a.name.localeCompare(b.name));
+      await this.persist({ manualHosts, overrides, hiddenHosts, hosts });
+      if (current && endpointKey(current) !== endpointKey(host)) await this.passwordAuth.forget(current);
+      this.emit(); return this.getState();
+    });
   }
   async removeHost(id) {
-    await this.initialized;
-    this.assertConfigurationIdle();
-    if (this.transferring) throw new Error('Wait for the current transfer to finish before removing machines.');
-    const host = this.state.hosts.find(entry => entry.id === id); if (!host) return this.getState();
-    if (host.source === 'Manual') this.manualHosts = this.manualHosts.filter(entry => entry.id !== id);
-    else this.hiddenHosts = [...new Set([...this.hiddenHosts, id])];
-    delete this.overrides[id]; this.state.hosts = this.state.hosts.filter(entry => entry.id !== id);
-    await this.persist(); await this.passwordAuth.forget(host); this.emit(); return this.getState();
+    return this.mutateConfiguration(async () => {
+      if (this.transferring) throw new Error('Wait for the current transfer to finish before removing machines.');
+      const host = this.state.hosts.find(entry => entry.id === id); if (!host) return this.getState();
+      const manualHosts = host.source === 'Manual' ? this.manualHosts.filter(entry => entry.id !== id) : this.manualHosts;
+      const hiddenHosts = host.source === 'Manual' ? this.hiddenHosts : [...new Set([...this.hiddenHosts, id])];
+      const overrides = { ...this.overrides }; delete overrides[id];
+      const hosts = this.state.hosts.filter(entry => entry.id !== id);
+      await this.persist({ manualHosts, hiddenHosts, overrides, hosts });
+      await this.passwordAuth.forget(host); this.emit(); return this.getState();
+    });
   }
-  enqueueFiles(paths) {
+  enqueueFiles(paths, validateSource = null) {
     return this.mutateShelf(async () => {
+      if (validateSource) await validateSource();
       if (!Array.isArray(paths) || paths.length > 500) throw new Error('Drop a list of at most 500 files or folders.');
       const additions = [];
       for (const file of paths) {
@@ -340,6 +362,7 @@ class DriftService {
         if ([...this.state.items, ...additions].some(item => item.path === file)) continue;
         additions.push({ id: crypto.randomUUID(), name: path.basename(file), kind: stats.isDirectory() ? 'folder' : 'file', size: stats.isDirectory() ? 0 : stats.size, path: file });
       }
+      if (validateSource) await validateSource();
       this.assertConfigurationIdle();
       if (this.state.items.length + additions.length > 500) throw new Error('The shelf holds up to 500 items. Remove some items first.');
       const previous = this.state.items;
@@ -477,6 +500,7 @@ class DriftService {
     });
   }
   async checkSource(item, windows = false) {
+    if (/[\u202a-\u202e\u2066-\u2069]/.test(item.name)) throw new Error('This filename contains invisible direction controls. Rename it before sending.');
     const stats = await fs.lstat(item.path);
     if (stats.isSymbolicLink() || !(stats.isFile() || stats.isDirectory())) throw new Error(`${item.name} is no longer a regular file or folder.`);
     if (stats.isDirectory()) {
@@ -484,7 +508,7 @@ class DriftService {
       async function walk(directory) {
         const names = new Set();
         for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-          if (hasControl(entry.name)) throw new Error('This folder has filenames containing control characters. Rename those files or use an archive before sending.');
+          if (hasControl(entry.name) || /[\u202a-\u202e\u2066-\u2069]/.test(entry.name)) throw new Error('This folder has filenames containing control characters. Rename those files or use an archive before sending.');
           if (names.has(nameKey(entry.name))) throw new Error('This folder has names that differ only in capitalization or Unicode spelling. Use an archive to preserve them safely on every filesystem.');
           names.add(nameKey(entry.name));
           if (windows && invalidWindowsName(entry.name)) throw new Error(`${entry.name} is not a valid filename on Windows. Rename it before sending.`);
@@ -508,6 +532,37 @@ class DriftService {
     else expression = psQuote(destination);
     const script = `$ErrorActionPreference='Stop'; $base=(${expression}); if([string]::IsNullOrWhiteSpace($base)){throw 'The destination folder could not be resolved.'}; [IO.Directory]::CreateDirectory($base) | Out-Null; $target=Join-Path -Path $base -ChildPath ${psQuote(batch)}; if(Test-Path -LiteralPath $target){throw 'This transfer folder already exists.'}; [IO.Directory]::CreateDirectory($target) | Out-Null; [Console]::WriteLine('DRIFT_DEST='+[IO.Path]::GetFullPath($target).Replace('\\','/'))`;
     return 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + Buffer.from(script, 'utf16le').toString('base64');
+  }
+  async uploadTransferItem(host, passwordSession, localPath, remotePath, kind = 'file') {
+    if (passwordSession) return passwordSession.upload(localPath, remotePath);
+    const args = [...(host.os === 'windows' ? [] : ['-O']), '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=5', '-o', 'ConnectionAttempts=1', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', '-P', String(host.port)];
+    if (host.identityFile) args.push('-i', expandHome(host.identityFile, this.homeDir), '-o', 'IdentitiesOnly=yes');
+    if (host.sshAlias) args.push('-o', 'HostName=' + host.address);
+    if (kind === 'folder') args.push('-r');
+    const scpHost = host.sshAlias || host.address;
+    const targetHost = scpHost.includes(':') ? '[' + scpHost + ']' : scpHost;
+    args.push(localPath, host.user + '@' + targetHost + ':' + (host.os === 'windows' ? remotePath : quoteRemote(remotePath)));
+    return this.run('scp', args, { timeout: 60 * 60 * 1000 });
+  }
+  async publishTransferReceipt(host, passwordSession, receipt) {
+    const manifest = encodeManifest({ version: 1, id: receipt.id, senderLabel: this.state.settings.deviceName || 'Another computer', sentAt: new Date(this.clock()).toISOString(), items: receipt.items });
+    const temporaryName = '.dropharbor-receipt-' + crypto.randomUUID() + '.tmp';
+    const localPath = path.join(this.dataDir, temporaryName);
+    const remoteTemporary = receipt.destination + '/' + temporaryName;
+    const remoteFinal = receipt.destination + '/' + RECEIPT_NAME;
+    try {
+      await fs.writeFile(localPath, manifest, { mode: 0o600, flag: 'wx' });
+      await this.uploadTransferItem(host, passwordSession, localPath, remoteTemporary);
+      const psQuote = value => "'" + value.replaceAll("'", "''") + "'";
+      // The completed marker appears only after every payload has arrived. Both
+      // forms fail rather than overwriting an existing marker at the destination.
+      const script = host.os === 'windows'
+        ? 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' + Buffer.from(`$ErrorActionPreference='Stop'; [IO.File]::Move(${psQuote(remoteTemporary)}, ${psQuote(remoteFinal)})`, 'utf16le').toString('base64')
+        : `ln -- ${quoteRemote(remoteTemporary)} ${quoteRemote(remoteFinal)} && test -f ${quoteRemote(remoteFinal)} && test ! -L ${quoteRemote(remoteFinal)} && test ${quoteRemote(remoteTemporary)} -ef ${quoteRemote(remoteFinal)} && rm -- ${quoteRemote(remoteTemporary)}`;
+      if (passwordSession) await passwordSession.exec(script);
+      else await this.run('ssh', [...this.sshArgs(host), script], { timeout: 15000 });
+      receipt.receiptPublished = true;
+    } finally { await fs.unlink(localPath).catch(() => {}); }
   }
   async send(payload) { return this.sendOne(payload); }
   async sendMany({ hostIds, itemIds } = {}) {
@@ -536,7 +591,7 @@ class DriftService {
         try { await this.sendOne({ hostId: host.id, itemIds: exactIds }, { withinBatch: true, batchId }); }
         catch (error) {
           const existing = this.state.history.find(receipt => receipt.batchId === batchId && receipt.hostId === host.id);
-          if (!existing) this.state.history.unshift({ id: crypto.randomUUID(), batchId, hostId: host.id, hostName: host.name, itemCount: exactIds.length, itemIds: exactIds.slice(), status: 'failed', message: messageFor(error), timestamp: new Date().toISOString() });
+          if (!existing) this.state.history.unshift({ id: crypto.randomUUID(), batchId, hostId: host.id, hostName: host.name, itemCount: exactIds.length, itemIds: exactIds.slice(), items: exactIds.map(id => this.state.items.find(item => item.id === id)).filter(Boolean).map(({ name, kind, size }) => ({ name, kind, size })), status: 'failed', message: messageFor(error), timestamp: new Date().toISOString() });
           else if (existing.status === 'sending') { existing.status = 'failed'; existing.message = messageFor(error); }
           this.state.history = this.state.history.slice(0, 100);
           // A disk failure must not release the batch lock while another worker is still sending.
@@ -559,7 +614,7 @@ class DriftService {
     const wanted = new Set(itemIds); const items = this.state.items.filter(item => wanted.has(item.id));
     if (items.length !== wanted.size) throw new Error('One of the selected items is no longer on the shelf.');
     this.transferring = true;
-    const receipt = { id: crypto.randomUUID(), ...(batchId ? { batchId } : {}), hostId: host.id, hostName: host.name, itemCount: items.length, itemIds: items.map(item => item.id), status: 'sending', message: 'Preparing the transfer…', timestamp: new Date().toISOString() };
+    const receipt = { id: crypto.randomUUID(), ...(batchId ? { batchId } : {}), hostId: host.id, hostName: host.name, itemCount: items.length, itemIds: items.map(item => item.id), items: items.map(({ name, kind, size }) => ({ name, kind, size })), status: 'sending', message: 'Preparing the transfer…', timestamp: new Date().toISOString() };
     this.state.history.unshift(receipt); this.state.history = this.state.history.slice(0, 100); this.emit();
     try {
       const perform = async passwordSession => {
@@ -579,27 +634,22 @@ class DriftService {
       const script = host.os === 'windows' ? this.windowsDestinationCommand(host.destination, batch) : posixScript;
       const result = passwordSession ? await passwordSession.exec(script) : await this.run('ssh', [...this.sshArgs(host), script], { timeout: 15000 });
       const match = result.stdout.match(/(?:^|\n)DRIFT_DEST=([^\r\n]+)/); if (!match || (host.os === 'windows' ? !/^[A-Za-z]:[\\/]/.test(match[1]) : !match[1].startsWith('/')) || hasControl(match[1])) throw new Error('The remote machine did not return a usable destination path.');
-      receipt.destination = match[1]; const usedNames = new Set();
+      receipt.destination = match[1]; const usedNames = new Set([nameKey(RECEIPT_NAME)]);
       for (let index = 0; index < items.length; index++) {
         const item = items[index]; let name = item.name; let suffix = 2;
         while (usedNames.has(nameKey(name))) { const extension = item.kind === 'folder' ? '' : path.extname(item.name); name = item.name.slice(0, item.name.length - extension.length) + ' (' + suffix++ + ')' + extension; }
         usedNames.add(nameKey(name));
         const remotePath = receipt.destination + '/' + name;
         receipt.message = `Sending ${index + 1} of ${items.length}: ${item.name}`; this.emit();
-        const args = [...(host.os === 'windows' ? [] : ['-O']), '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=5', '-o', 'ConnectionAttempts=1', '-o', 'ServerAliveInterval=5', '-o', 'ServerAliveCountMax=2', '-P', String(host.port)];
-        if (host.identityFile) args.push('-i', expandHome(host.identityFile, this.homeDir), '-o', 'IdentitiesOnly=yes');
-        if (host.sshAlias) args.push('-o', 'HostName=' + host.address);
-        if (item.kind === 'folder') args.push('-r');
-        const scpHost = host.sshAlias || host.address;
-        const targetHost = scpHost.includes(':') ? '[' + scpHost + ']' : scpHost;
-        args.push(item.path, host.user + '@' + targetHost + ':' + (host.os === 'windows' ? remotePath : quoteRemote(remotePath)));
-        if (passwordSession) await passwordSession.upload(item.path, remotePath);
-        else await this.run('scp', args, { timeout: 60 * 60 * 1000 });
+        receipt.items[index] = { name, kind: item.kind, size: item.kind === 'folder' ? 0 : (await fs.lstat(item.path)).size };
+        await this.uploadTransferItem(host, passwordSession, item.path, remotePath, item.kind);
       }
+      try { await this.publishTransferReceipt(host, passwordSession, receipt); }
+      catch { receipt.receiptPublished = false; receipt.receiptWarning = 'Files were delivered, but the receiving app could not be notified. Open the destination folder to find them.'; }
       };
       if (this.passwordAuth.metadata(host).hasSavedPassword) await this.passwordAuth.withPassword(host, perform);
       else await perform();
-      receipt.status = 'sent'; receipt.message = `${items.length} ${items.length === 1 ? 'item' : 'items'} delivered to ${receipt.destination}. Your shelf is kept for reuse.`;
+      receipt.status = 'sent'; receipt.message = `${items.length} ${items.length === 1 ? 'item' : 'items'} delivered to ${receipt.destination}. Your shelf is kept for reuse.` + (receipt.receiptWarning ? ' ' + receipt.receiptWarning : '');
     } catch (error) {
       receipt.status = 'failed'; receipt.message = messageFor(error);
       if (receipt.destination) receipt.message += ` Some files may already be in ${receipt.destination}; retrying creates a new folder.`;
@@ -668,7 +718,12 @@ class DriftService {
       this.emit(); return this.getState();
     } finally { this.authenticationSetup = false; }
   }
-  async updateSettings(patch) { await this.initialized; this.assertConfigurationIdle(); this.state.settings = { ...this.state.settings, ...this.validSettings(patch) }; await this.persist(); this.emit(); return this.getState(); }
+  async updateSettings(patch) {
+    return this.mutateConfiguration(async () => {
+      await this.persist({ settings: { ...this.state.settings, ...this.validSettings(patch) } });
+      this.emit(); return this.getState();
+    });
+  }
 }
 
 module.exports = { DriftService };

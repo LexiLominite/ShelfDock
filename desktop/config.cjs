@@ -52,7 +52,7 @@ function validateConfig(input) {
   let config;
   try { config = JSON.parse(serialized); } catch { throw new Error('Choose a valid JSON configuration file.'); }
   object(config, ['schema', 'version', 'hosts', 'settings'], 'Configuration');
-  if (config.schema !== SCHEMA || config.version !== VERSION) throw new Error('This file is not a supported lex-drift configuration (version 1).');
+  if (config.schema !== SCHEMA || config.version !== VERSION) throw new Error('This file is not a supported ShelfDock or LexBridge configuration (version 1).');
   if (!Array.isArray(config.hosts) || config.hosts.length > MAX_HOSTS) throw new Error('A configuration can contain at most 500 machines.');
   const hosts = config.hosts.map(validateHost);
   const identities = new Set();

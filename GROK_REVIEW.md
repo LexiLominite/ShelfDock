@@ -1,3 +1,7 @@
+# ShelfDock / LexBridge 0.5 review
+
+See [the 0.5 design review](docs/design-v050.md) for the actual Grok 4.7 two-device, update and naming consultation. The owner chose ShelfDock (public) and LexBridge (personal). Only source/product descriptions were shared. Earlier reviews below remain historical evidence.
+
 # Grok review and changes
 
 The installed Grok CLI completed a read-only review of the clipboard, configuration, service, preload, and native controller source. It received a source-only snapshot without personal configuration or clipboard data. Web access, subagents, and tools were disabled for that review.

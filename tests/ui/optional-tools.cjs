@@ -17,7 +17,7 @@ const harness = require('./harness.cjs');
       await page.locator('[data-host-id="host-0"]').hover();
       await page.getByRole('button', {name: 'Open site on Studio', exact: true}).click();
       const form = page.getByRole('form', {name: 'Connect to a website through Studio'});
-      assert.equal(await form.locator('.quick-connect-heading strong').innerText(), 'Remote service');
+      assert.equal(await form.locator('.quick-connect-heading strong').innerText(), 'Remote machine’s service');
       await form.getByLabel('Website address', {exact: true}).fill('http://localhost:1331');
       assert.equal(await form.getByRole('button', {name: 'Advanced', exact: true}).getAttribute('aria-expanded'), 'false');
       await page.screenshot({path: path.join(output, `${label}-remote-service.png`)});
@@ -41,6 +41,6 @@ const harness = require('./harness.cjs');
       await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.closest('[data-host-id]')?.getAttribute('data-host-id') === 'host-0', null, {timeout: 2000});
       assert.deepEqual(page.errors, []); await page.close();
     }
-    console.log('Optional tools: hidden Clipboard defaults, remote-service label, collapsed details, keyboard installer entry, selected destination, no automatic remote operations, menu bounds and screenshots across all three densities.');
+    console.log('Optional tools: hidden Clipboard defaults, remote-machine service label, collapsed details, keyboard installer entry, selected destination, no automatic remote operations, menu bounds and screenshots across all three densities.');
   } finally { await app.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });
