@@ -1,10 +1,10 @@
 # Clipboard sync
 
-ShelfDock can connect two of your own installs and copy plain text, URLs, and PNG images between them. Clipboard tools and sync start off. Connecting requires an explicit **Connect device** action; selecting a Ready SSH machine does not connect or enable sync.
+ShelfDock and LexBridge can share plain text, URLs, and PNG images between your own running installs. **Continuity clipboard** gives you a copy-here, paste-on-another-device flow: after explicit opt-in, it connects ready saved machines automatically and places fresh received items on the system clipboard. Clipboard tools, sync, and Continuity remain off on fresh installs. Existing manual sync preferences are preserved during upgrade. Merely viewing or selecting a machine never enables sharing.
 
 ## Transport
 
-The running app listens only on `127.0.0.1:47635`. A peer reaches that port through OpenSSH `ssh -W`, using the machine's existing SSH route. SSH encrypts the connection and authenticates the host. For your own saved machines, **Connect device** uses trusted SSH key access to establish clipboard authorization. Both running apps must have Clipboard tools and sync enabled and resumed.
+The running app listens only on `127.0.0.1:47635`. A peer reaches that port through OpenSSH `ssh -W`, using the machine's existing SSH route. SSH encrypts the connection and authenticates the host. For your own saved machines, Continuity or the manual **Connect device** action uses trusted existing SSH key access to establish clipboard authorization without a pairing-code prompt. Both running apps must have Clipboard tools and sync enabled and resumed.
 
 After the tunnel connects, the initial handshake authenticates a device token created with `crypto.randomBytes` and stored with Electron `safeStorage`. The SSH private key is never read as an application secret. Connections without a valid token are closed. If secure storage is unavailable, pairing is refused and nothing is written in plaintext.
 
@@ -18,22 +18,28 @@ Messages are versioned UTF-8 JSON, length-prefixed with a 4-byte big-endian leng
 
 Content kinds in v1: `text`, `url`, and `png`. Reconnects require an authenticated hello acknowledgement before sending. Delivery acknowledgements retain only the newest pending copy until it is received. HTML is reduced to its plain-text fallback before send. File lists and unknown formats are refused. Payloads are not put in errors, logs, or exports.
 
-An item older than 120 seconds is dropped. Peers do not replay history on reconnect. At most one unsent local item is remembered per peer, and it is dropped when it expires. Near-simultaneous copies are applied in arrival order across a serialized delivery queue. An incoming item blocked by editing, authentication setup, or pause is not acknowledged; it can be retried while still fresh. The same `eventId` is stored once. A local write caused by sync records that `eventId` so the capture poll does not send it back. Copying a history item explicitly creates a new event. Native polling observes changed contents; an identical copy with no intervening clipboard change cannot always be detected.
+An item older than 120 seconds is dropped. Peers do not replay history on reconnect. At most one unsent local item is remembered per peer, and it is dropped when it expires. Deliveries use a serialized queue. In Continuity mode, events are ordered by their original timestamp and event ID; older fresh events enter history without replacing a newer clipboard. Clock skew between computers can affect that order. A pre-delivery capture and native snapshot comparison protect a newer local copy, including one the regular polling timer has not yet observed. Native text and PNG writes use the supported asynchronous Electron ClipboardItem API and are acknowledged after completion. Private or unsupported native clipboard formats are left untouched. An incoming item blocked by editing, authentication setup, or pause is not acknowledged; it can be retried while still fresh. The same `eventId` is stored once. A local write caused by sync records that `eventId` so the capture poll does not send it back. Copying a history item explicitly creates a new event. Native polling observes changed contents; an identical copy with no intervening clipboard change cannot always be detected.
 
 ## How to turn it on
 
-1. On both computers, open Settings and turn on **Clipboard tools**. Sync stays off.
-2. On both computers, turn on **Sync between devices** and ensure sync is resumed. Both compatible apps must remain running.
-3. On one computer, select your saved machine, choose send, receive, or both, then choose **Connect device**. Existing SSH key access establishes the device link without entering a code. Machine and direction selection never connect automatically. Settings shows **Connecting…**, then **Connected** or an actionable inline error; fix the remote app, sync, secure storage, or SSH access and retry.
-4. Choose whether incoming items are saved to clipboard history or also placed on the system clipboard. History is the default, so a sync does not replace what you have copied until you ask it to.
-5. Pause stops sync only. Revoke removes that computer. Turning Clipboard tools off stops sync and keeps local history.
+1. On each computer, open Settings and turn on **Clipboard tools**. This alone does not start sync.
+2. Turn on **Continuity clipboard** on each compatible running app. This explicit choice enables/resumes sync and selects system-clipboard delivery. Ready saved machines with trusted SSH key access are connected quietly in the background. No separate Connect action is needed for the usual flow.
+3. Copy new plain text, a URL, or a PNG on one linked device, then paste normally on another. Incoming items are also available in clipboard history. Local automatic history capture is still optional. Normal capture polls every 1.5 seconds; this is not a zero-latency OS service.
+4. Use **Pause** to stop sharing. Disabling Continuity restores the previous manual receive preference; it does not revoke devices or disable an already-enabled manual sync choice. **Advanced clipboard sync** retains send-only/receive-only/both, per-device pause, manual linking, and history-only receive controls.
+5. **Remove** revokes the identity on both endpoints and prevents automatic rejoining through another alias. **Allow again** is explicit on each endpoint; an intentional replacement of an existing approval requires Remove, Allow again, then linking. Re-enabling tools after turning them off leaves sharing stopped until **Resume Continuity clipboard** is chosen.
 
-Items older than two minutes are not delivered after a reconnect. Existing clipboard history is not uploaded when sync is enabled.
+Each app must be running with tools and sync enabled and resumed. To replace that device's OS clipboard, enable Continuity there or explicitly choose manual system-clipboard receive. A history-only receiver remains history-only. Remote settings are never silently enabled. Apps using a nonstandard data profile need a manual compatible route; automatic owner bootstrap expects the standard app profile.
+
+Ready saved SSH routes are checked serially every 30 seconds, with bounded quiet retry backoff, up to 32 connected devices. Existing approval tokens, directions, and paused choices are retained. The initiating computer needs trusted key-based OpenSSH access; a saved password by itself is not sufficient for unattended background transport. SSH trust and credentials are never bypassed or copied.
+
+In a linked star or triangle, Continuity devices relay to other approved send-capable peers. The event UUID, original timestamp, and payload are preserved; each immediate hop is authenticated. Received history labels describe the immediate sending device, including when it relayed the item. Duplicates and returned copies do not rewrite the clipboard. Manual sync does not relay.
+
+Items older than two minutes are not delivered after a reconnect. Only the latest fresh pending copy is retained; history is never uploaded. Enabling/resuming establishes a baseline so the clipboard already present is not broadcast. Identical copies without an intervening content change may not be detected. File lists and rich formatting are outside the v1 sync protocol; use the shelf for files.
 
 ## Defaults
 
 - Clipboard tools stay off, and the tab stays hidden, until the existing Settings choice.
-- Sync stays off. Enabling tools does not enable sync.
+- Sync and Continuity stay off. Enabling tools does not enable either. Enabling Continuity explicitly selects native clipboard receive and resumes sync.
 - Default receive mode is `history`: incoming items are stored in clipboard history and are not written to the system clipboard.
 - Receive mode `clipboard` also writes the OS clipboard. That write is marked so it is not recaptured.
 - Automatic clipboard history is optional independently of sync. With only sync enabled, new copies are sent without recording every local copy in history. Explicit incoming items are saved even when automatic history is off.
@@ -45,7 +51,9 @@ Items older than two minutes are not delivered after a reconnect. Existing clipb
 
 ## Rollback
 
-Baseline is `cb47a6d` on `main`. This feature is `feat/clipboard-sync` in the worktree `outputs/work/clipboard-sync`. For an installed app, quit from the tray, preserve its user-data folder, and reinstall the previous same-edition 0.5.0 package. Keep the existing worker lock and user-data location. For source development, use a separate checkout at the baseline rather than resetting this working branch. Settings added by this feature live under `clipboard-sync/` inside the existing user-data directory. Older builds ignore that directory. Removing a peer, pausing, or turning Clipboard tools off stops sync without deleting local history. No production profile is migrated in place.
+The v0.7.3 continuation branch is `codex/shelfdock-v073-continuity`; its verified v0.7.2 baseline is `de6e812e604a135ae33168442353760da13e3e24`. Keep the previous same-edition app and its private profile backup. The local installer swaps the app only after package verification and restores the previous app if the new renderer does not confirm startup. Source rollback uses a separate checkout at the baseline, without resetting a working tree. Keep the existing user-data path and shared worker identity.
+
+The protocol remains v1. The optional Continuity preference and encrypted exclusions are additive. Older compatible apps continue manual sync but do not implement auto-link/relay. Do not downgrade after removing devices unless the disabled sync preference and private profile snapshot are restored: an older binary does not understand the new automatic-rejoin exclusion policy. Pausing or disabling tools is the quickest reversible recovery path and retains saved history.
 
 ## Verification and platform limits
 

@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('drift', {
   pairOwnedClipboardSync: request => invoke('pairOwnedClipboardSync', request),
   updateClipboardPeer: request => invoke('updateClipboardPeer', request),
   revokeClipboardPeer: request => invoke('revokeClipboardPeer', request),
+  restoreClipboardPeer: request => invoke('restoreClipboardPeer', request),
   getMacInstallState: () => invoke('getMacInstallState'),
   previewMacInstall: request => invoke('previewMacInstall', request),
   installOnMac: request => invoke('installOnMac', request),

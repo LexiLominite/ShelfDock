@@ -153,11 +153,11 @@ class ClipboardHistory {
       } catch (e) { this.settings = previous; throw e; }
     });
   }
-  async readCurrent() {
-    if (typeof this.clipboard?.has === 'function') for (const marker of MARKERS) if (await this.clipboard.has(`electron application/osclipboard;format="${marker}"`)) return null;
+  async readCurrent({ snapshot = false } = {}) {
+    if (typeof this.clipboard?.has === 'function') for (const marker of MARKERS) if (await this.clipboard.has(`electron application/osclipboard;format="${marker}"`)) return snapshot ? { kind: 'private' } : null;
     const items = await this.clipboard.read();
     if (!Array.isArray(items) || items.length > 500) throw new Error('The clipboard contains too many items.');
-    for (const item of items) if (item.types?.some(type => MARKERS.some(marker => type.includes(marker)))) return null;
+    for (const item of items) if (item.types?.some(type => MARKERS.some(marker => type.includes(marker)))) return snapshot ? { kind: 'private' } : null;
     const find = type => items.find(item => item.types?.includes(type));
     const bytes = async (item, type, max) => { const blob = await item.getType(type); if (blob.size > max) throw new Error('This clipboard item is too large for history. Use the transfer shelf instead.'); const data = Buffer.from(await blob.arrayBuffer()); if (data.length > max) throw new Error('Clipboard size limit exceeded.'); return data; };
     let syncEventId = '';
@@ -174,8 +174,8 @@ class ClipboardHistory {
       }
     }
     const png = find('image/png'); if (png) return stamp({ kind: 'image', png: validateClipboardPNG(await bytes(png, 'image/png', MAX_ITEM)).toString('base64'), title: 'Copied image' });
-    const plain = find('text/plain'); if (plain) { const text = (await bytes(plain, 'text/plain', MAX_TEXT)).toString('utf8'); if (!text) return null; const htmlItem = find('text/html'); const html = htmlItem ? (await bytes(htmlItem, 'text/html', MAX_TEXT)).toString('utf8') : undefined; return stamp({ kind: 'text', text, ...(html ? { html } : {}), title: text.replace(/\s+/g, ' ').slice(0, 80) }); }
-    return null;
+    const plain = find('text/plain'); if (plain) { const text = (await bytes(plain, 'text/plain', MAX_TEXT)).toString('utf8'); if (!text) return snapshot ? { kind: 'empty' } : null; const htmlItem = find('text/html'); const html = htmlItem ? (await bytes(htmlItem, 'text/html', MAX_TEXT)).toString('utf8') : undefined; return stamp({ kind: 'text', text, ...(html ? { html } : {}), title: text.replace(/\s+/g, ' ').slice(0, 80) }); }
+    return snapshot ? { kind: items.length ? 'unsupported' : 'empty' } : null;
   }
   contentHash(content) { return crypto.createHash('sha256').update(JSON.stringify([content.kind, content.text, content.html, content.png, content.files])).digest('hex'); }
   noteSyncEvent(eventId, hash) {

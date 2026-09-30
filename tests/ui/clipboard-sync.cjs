@@ -15,6 +15,7 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     const history = dialog.getByRole('radio', { name: 'Save to clipboard history', exact: true });
     const systemClipboard = dialog.getByRole('radio', { name: 'Also place on the system clipboard', exact: true });
     await dialog.waitFor();
+    await dialog.getByText('Advanced clipboard sync', { exact: true }).click();
     assert.equal(await page.evaluate(() => [document.documentElement, document.body].every((surface) => surface.classList.contains('platform-darwin') && surface.classList.contains('liquid-glass'))), true);
     await page.evaluate(() => { window.__state.environment.nativeGlass = { mode: 'solid', reducedTransparency: true }; window.__listeners.state(structuredClone(window.__state)); });
     await page.waitForFunction(() => !document.documentElement.classList.contains('liquid-glass'));
