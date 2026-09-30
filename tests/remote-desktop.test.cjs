@@ -47,6 +47,36 @@ test('disconnect cancels a start waiting for saved-machine lookup', async () => 
   await assert.rejects(starting, /cancelled/); assert.equal(rd.record, null); await rd.shutdown();
 });
 
+test('cancelled setup publishes late server ownership when cleanup fails and clears it on retry', async t => {
+  for (const failCleanup of [false, true]) await t.test(failCleanup ? 'failed cleanup can be retried' : 'successful cleanup clears ownership', async t => {
+    let completeApply, cleanupFails = failCleanup, stops = 0;
+    const cleanupError = new Error('SSH is offline');
+    const changes = [];
+    const rd = new RemoteDesktop({ service: serviceFor(), allowedOrigins: ['null'], onChange: state => changes.push(state), providers: { 'linux-x11': {
+      ...provider,
+      apply: async (_service, _host, plan) => new Promise(resolve => { completeApply = () => resolve({ owner: plan.owner, port: plan.port }); }),
+      stop: async () => { stops++; if (cleanupFails) throw cleanupError; }
+    } } });
+    t.after(async () => { cleanupFails = false; await rd.shutdown(); });
+    const preview = await rd.previewSetup({ hostId: host.id });
+    const applying = rd.apply({ planId: preview.id });
+    while (!completeApply) await new Promise(resolve => setImmediate(resolve));
+    const signal = rd.applyAbort.signal;
+    await rd.stop(); assert.equal(signal.aborted, true);
+    const outcome = failCleanup ? assert.rejects(applying, error => error === cleanupError) : applying;
+    completeApply(); await outcome;
+    assert.equal(stops, 1); assert.equal(rd.mutating, false); assert.equal(rd.applyAbort, null);
+    const published = changes.at(-1);
+    assert.equal(published.session, null);
+    if (failCleanup) {
+      assert.deepEqual(published.ownedServer, { hostId: host.id, provider: 'linux-x11', port: 5900 });
+      assert.ok(rd.owned.owner); assert.deepEqual(published, rd.getState());
+      cleanupFails = false; await rd.stop(); assert.equal(stops, 2);
+    }
+    assert.equal(rd.owned, null); assert.deepEqual(changes.at(-1), { session: null });
+  });
+});
+
 test('late SSH connection is destroyed after Disconnect', async () => {
   let resolve; const rd = new RemoteDesktop({ service: serviceFor(), allowedOrigins: ['null'], connect: () => new Promise(done => { resolve = done; }) });
   const result = await rd.start({ hostId: host.id });

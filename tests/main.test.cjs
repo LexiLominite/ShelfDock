@@ -110,9 +110,11 @@ async function controller(options = {}) {
       async shutdown() { record('continuityShutdown'); }
     } },
     './clipboard-sync.cjs': { ClipboardSync: class {
-      constructor() { record('clipboardSyncCreated'); this.ready = Promise.resolve(); this.settings = { available: false, enabled: false, paused: false, continuity: false, receiveMode: 'history', pairing: null, peers: [] }; }
+      constructor() { record('clipboardSyncCreated'); this.ready = Promise.resolve(); this.settings = { available: false, enabled: options.clipboardSyncEnabled === true, paused: false, continuity: false, receiveMode: 'history', pairing: null, peers: [] }; }
       state() { return { ...this.settings }; }
-      async setEnabled(enabled) { this.settings.enabled = enabled; record('clipboardSyncEnabled', enabled); }
+      async setEnabled(enabled) { record('clipboardSyncEnabled', enabled); if (options.clipboardSyncStartError && (enabled || options.clipboardSyncDisableError)) throw new Error('Synthetic private startup detail'); this.settings.enabled = enabled; }
+      noteError(message) { this.settings.error = message; record('clipboardSyncWarning', message); }
+      cancelAutomaticOwnerRequests() { record('automaticClipboardCancelled'); }
       async setPaused(paused) { this.settings.paused = paused; record('clipboardSyncPaused', paused); }
       async setReceiveMode(mode) { this.settings.receiveMode = mode; }
       async setContinuity(value) { record('continuityOptIn', value); this.settings.continuity = value; if (value) Object.assign(this.settings, { enabled: true, paused: false, receiveMode: 'clipboard' }); }
@@ -601,21 +603,53 @@ test('background test mode never constructs or starts Continuity networking',asy
  assert.equal(c.calls.some(call=>call.type==='continuityCreated'||call.type==='continuityStart'),false);
  await assert.rejects(c.invoke('updateClipboardSync',{continuity:true}),/unavailable/);
 });
-test('automatic Continuity linking owns the shared lock before lookup and revalidates the ready saved route',async()=>{
- const host={...siteHost,status:'ready'};const c=await controller({hosts:[host],clipboardToolsEnabled:true});
- const config=c.calls.find(call=>call.type==='continuityCreated').values[0];
- const original=c.service.getState.bind(c.service);let lookup;
- c.service.getState=()=>new Promise(resolve=>{lookup=resolve;});
- const pending=config.linkHost(host);assert.equal(c.service.clipboardLinking,true);
- await assert.rejects(c.invoke('saveHost',host),/device connection/);
- await assert.rejects(c.invoke('installUpdate'),/device connection/);
- c.service.getState=original;lookup(c.service.state);await pending;
- const request=c.calls.find(call=>call.type==='ownerClipboardConnected').values[0];assert.equal(request.automatic,true);assert.equal(request.direction,'both');
- assert.equal(c.service.clipboardLinking,false);
- c.service.state.hosts=[{...host,address:'changed.invalid'}];await assert.rejects(config.linkHost(host),/saved machine changed/);
- assert.equal(c.service.clipboardLinking,false);assert.equal(c.calls.filter(call=>call.type==='ownerClipboardConnected').length,1);
- c.service.state.hosts=[{...host,status:'offline'}];await assert.rejects(config.linkHost(host),/saved machine changed/);
- c.service.authenticationSetup=true;await assert.rejects(config.linkHost(host),/active work/);
+test('automatic Continuity linking owns a scoped lock before lookup and revalidates the saved route', async () => {
+ const host = {...siteHost, status: 'ready'}; let finish;
+ const link = new Promise(resolve => { finish = resolve; });
+ const c = await controller({hosts: [host], clipboardToolsEnabled: true, clipboardLink: link});
+ const config = c.calls.find(call => call.type === 'continuityCreated').values[0];
+ const original = c.service.getState.bind(c.service); let lookup;
+ c.service.getState = () => new Promise(resolve => { lookup = resolve; });
+ const pending = config.linkHost(host);
+ assert.equal(c.service.automaticClipboardLinking, true);
+ assert.notEqual(c.service.clipboardLinking, true);
+ for (const method of ['saveHost', 'removeHost', 'importConfig', 'configureAccess', 'refreshHosts', 'probeHosts', 'updateSettings', 'installUpdate', 'installRemotely', 'applyRemoteDesktopSetup', 'pairOwnedClipboardSync']) {
+   await assert.rejects(c.invoke(method, host), /device connection/);
+ }
+ await assert.rejects(config.linkHost(host), /active work/);
+ c.service.getState = original; lookup(c.service.state); await flush();
+ for (const method of ['enqueueFiles', 'enqueueText', 'send', 'sendMany']) c.service[method] = async value => { c.calls.push({type: method, values: [value]}); return c.service.state; };
+ for (const method of ['enqueueFiles', 'enqueueText', 'send', 'sendMany', 'getState', 'getReceived', 'getUpdates']) await c.invoke(method, 'synthetic');
+ assert.equal(c.calls.filter(call => call.type === 'automaticClipboardCancelled').length, 4);
+ await c.invoke('updateClipboardSync', {paused: true});
+ await c.invoke('updateClipboardTools', {enabled: false});
+ assert.equal(c.calls.some(call => call.type === 'clipboardSyncPaused' && call.values[0] === true), true);
+ assert.equal(c.calls.some(call => call.type === 'clipboardSyncEnabled' && call.values[0] === false), true);
+ finish(); await pending;
+ const request = c.calls.find(call => call.type === 'ownerClipboardConnected').values[0];
+ assert.equal(request.automatic, true); assert.equal(request.direction, 'both');
+ assert.equal(c.service.automaticClipboardLinking, false);
+ c.service.state.hosts = [{...host, address: 'changed.invalid'}]; await assert.rejects(config.linkHost(host), /saved machine changed/);
+ assert.equal(c.service.automaticClipboardLinking, false);
+ assert.equal(c.calls.filter(call => call.type === 'ownerClipboardConnected').length, 1);
+ c.service.state.hosts = [{...host, status: 'offline'}]; await assert.rejects(config.linkHost(host), /saved machine changed/);
+ c.service.authenticationSetup = true; await assert.rejects(config.linkHost(host), /active work/);
+});
+test('optional clipboard startup failure keeps the shelf available and reports a safe disabled state', async () => {
+ for (const clipboardSyncDisableError of [false, true]) {
+   const c = await controller({clipboardToolsEnabled: true, clipboardSyncEnabled: true, clipboardSyncStartError: true, clipboardSyncDisableError});
+   assert.equal(c.windows.length, 1); assert.equal(c.trays.length, 1);
+   assert.equal(c.calls.some(call => call.type === 'workerAcquire'), true);
+   assert.equal(c.calls.some(call => call.type === 'receivedStart'), true);
+   assert.equal(c.calls.some(call => call.type === 'updatesStart'), true);
+   assert.equal(c.calls.some(call => call.type === 'quit' || call.type === 'errorDialog'), false);
+   const state = await c.invoke('getState');
+   assert.equal(state.clipboardSync.enabled, false);
+   assert.match(state.clipboardSync.error, /off for this session/);
+   assert.equal(state.clipboardSync.error.includes('private startup detail'), false);
+   assert.deepEqual(c.errors, []);
+   await c.invoke('getReceived'); await c.invoke('getUpdates');
+ }
 });
 test('Allow again requires tools and can restore an excluded identity during a pending link',async()=>{
  const off=await controller();await assert.rejects(off.invoke('restoreClipboardPeer',{id:'fixture'}),/Enable Clipboard tools/);

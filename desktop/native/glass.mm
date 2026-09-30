@@ -2,9 +2,12 @@
 // N-API binary still loads on macOS versions predating Liquid Glass.
 #import <AppKit/AppKit.h>
 #import <objc/runtime.h>
+#import <dispatch/dispatch.h>
 #include <cmath>
 #include <cstring>
 #include <vector>
+#include <memory>
+#include <cstdlib>
 #ifndef SHELFDOCK_GLASS_TEST
 #include <node_api.h>
 #endif
@@ -175,19 +178,51 @@ static napi_value Inspect(napi_env env, napi_callback_info info) {
   }
 }
 struct AccessibilityWatcher {
-  napi_env env;
-  napi_ref callback;
-  napi_async_context context;
-  id observer;
-  uint32_t token;
+  napi_env env = nullptr;
+  napi_ref callback = nullptr;
+  napi_async_context context = nullptr;
+  id observer = nil;
+  uint32_t token = 0;
+  bool active = true;
+  unsigned callbackDepth = 0;
 };
-static std::vector<AccessibilityWatcher *> watchers;
+using Watcher = std::shared_ptr<AccessibilityWatcher>;
+static std::vector<Watcher> watchers;
 static uint32_t nextWatcher = 1;
-static void DeleteWatcher(AccessibilityWatcher *watcher) {
-  [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:watcher->observer];
-  napi_delete_reference(watcher->env, watcher->callback);
-  napi_async_destroy(watcher->env, watcher->context);
-  delete watcher;
+static void CleanupWatcherHandles(const Watcher &watcher) {
+  // Unwatch may run inside the callback. Keep its async context alive until
+  // napi_make_callback and the enclosing handle scope have returned.
+  if (watcher->callbackDepth) return;
+  if (watcher->callback) { napi_delete_reference(watcher->env, watcher->callback); watcher->callback = nullptr; }
+  if (watcher->context) { napi_async_destroy(watcher->env, watcher->context); watcher->context = nullptr; }
+}
+static void DeleteWatcher(const Watcher &watcher) {
+  watcher->active = false;
+  id observer = watcher->observer;
+  watcher->observer = nil; // Break observer -> block -> shared watcher ownership.
+  if (observer) [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:observer];
+  CleanupWatcherHandles(watcher);
+}
+static void DeliverWatcher(const Watcher &watcher) {
+  // A notification block may already be queued when unwatch/env cleanup runs.
+  // Its shared ownership remains valid, and this guard precedes every N-API use.
+  if (!watcher->active) return;
+  watcher->callbackDepth += 1;
+  napi_env env = watcher->env;
+  napi_handle_scope scope;
+  if (napi_open_handle_scope(env, &scope) == napi_ok) {
+    napi_value callback, receiver, ignored, status = Status(env, "accessibility-changed");
+    if (napi_get_reference_value(env, watcher->callback, &callback) == napi_ok && napi_get_global(env, &receiver) == napi_ok) {
+      napi_status called = napi_make_callback(env, watcher->context, receiver, callback, 1, &status, &ignored);
+      if (called != napi_ok) {
+        bool pending = false;
+        if (napi_is_exception_pending(env, &pending) == napi_ok && pending) napi_get_and_clear_last_exception(env, &ignored);
+      }
+    }
+    napi_close_handle_scope(env, scope);
+  }
+  watcher->callbackDepth -= 1;
+  if (!watcher->active) CleanupWatcherHandles(watcher);
 }
 static void CleanupWatchers(void *data) {
   napi_env env = static_cast<napi_env>(data);
@@ -200,17 +235,14 @@ static napi_value WatchAccessibility(napi_env env, napi_callback_info info) {
   napi_valuetype type; if (!argc || napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
     napi_throw_type_error(env, nullptr, "Accessibility listener must be a function"); return nullptr;
   }
-  AccessibilityWatcher *watcher = new AccessibilityWatcher{env, nullptr, nullptr, nil, nextWatcher++};
+  Watcher watcher = std::make_shared<AccessibilityWatcher>();
+  watcher->env = env; watcher->token = nextWatcher++;
   napi_create_reference(env, args[0], 1, &watcher->callback);
   napi_value resource, name; napi_create_object(env, &resource);
   napi_create_string_utf8(env, "shelfdock:accessibility", NAPI_AUTO_LENGTH, &name);
   napi_async_init(env, resource, name, &watcher->context);
   watcher->observer = [NSWorkspace.sharedWorkspace.notificationCenter addObserverForName:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
-    napi_handle_scope scope; if (napi_open_handle_scope(env, &scope) != napi_ok) return;
-    napi_value callback, receiver, ignored, status = Status(env, "accessibility-changed");
-    napi_get_reference_value(env, watcher->callback, &callback); napi_get_undefined(env, &receiver);
-    napi_make_callback(env, watcher->context, receiver, callback, 1, &status, &ignored);
-    napi_close_handle_scope(env, scope);
+    DeliverWatcher(watcher);
   }];
   watchers.push_back(watcher);
   napi_value token; napi_create_uint32(env, watcher->token, &token); return token;
@@ -220,6 +252,20 @@ static napi_value UnwatchAccessibility(napi_env env, napi_callback_info info) {
   uint32_t token = 0; if (argc) napi_get_value_uint32(env, args[0], &token);
   for (auto it = watchers.begin(); it != watchers.end(); ++it) {
     if ((*it)->env == env && (*it)->token == token) { DeleteWatcher(*it); watchers.erase(it); break; }
+  }
+  napi_value result; napi_get_undefined(env, &result); return result;
+}
+static napi_value PostAccessibilityForTest(napi_env env, napi_callback_info info) {
+  [NSWorkspace.sharedWorkspace.notificationCenter postNotificationName:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification object:nil];
+  napi_value result; napi_get_undefined(env, &result); return result;
+}
+static napi_value QueueAccessibilityForTest(napi_env env, napi_callback_info info) {
+  size_t argc = 1; napi_value args[1]; napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  uint32_t token = 0; if (argc) napi_get_value_uint32(env, args[0], &token);
+  for (const Watcher &watcher : watchers) if (watcher->env == env && watcher->token == token) {
+    Watcher queued = watcher;
+    dispatch_async(dispatch_get_main_queue(), ^{ DeliverWatcher(queued); });
+    break;
   }
   napi_value result; napi_get_undefined(env, &result); return result;
 }
@@ -233,6 +279,14 @@ static napi_value Init(napi_env env, napi_value exports) {
     {"unwatchAccessibility", nullptr, UnwatchAccessibility, nullptr, nullptr, nullptr, napi_default, nullptr}
   };
   napi_define_properties(env, exports, sizeof(methods) / sizeof(methods[0]), methods);
+  const char *testProfile = std::getenv("SHELFDOCK_GLASS_TEST_PROFILE");
+  if (testProfile && *testProfile) {
+    napi_property_descriptor tests[] = {
+      {"postAccessibilityForTest", nullptr, PostAccessibilityForTest, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"queueAccessibilityForTest", nullptr, QueueAccessibilityForTest, nullptr, nullptr, nullptr, napi_default, nullptr}
+    };
+    napi_define_properties(env, exports, sizeof(tests) / sizeof(tests[0]), tests);
+  }
   napi_add_env_cleanup_hook(env, CleanupWatchers, env);
   return exports;
 }

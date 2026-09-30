@@ -47,7 +47,7 @@ function sshTargetFor(host) {
 async function deliverSyncedClipboard(item) {
   return deliverClipboard({ history: clipboardHistory, sync: clipboardSync, clipboard, ClipboardItem }, item);
 }
-function continuityBlocked() { return backgroundTest || quitting || interaction.dragging || !!(service?.scanPromise || service?.probePromise || service?.authenticationSetup || service?.configurationImport || service?.configurationSaving || service?.appUpdating || service?.tunnelSetup || service?.remoteInstallation || service?.macInstallation || service?.remoteDesktopSetup || service?.clipboardLinking || service?.transferring || remoteDesktop?.mutating); }
+function continuityBlocked() { return backgroundTest || quitting || interaction.dragging || !!(service?.scanPromise || service?.probePromise || service?.authenticationSetup || service?.configurationImport || service?.configurationSaving || service?.appUpdating || service?.tunnelSetup || service?.remoteInstallation || service?.macInstallation || service?.remoteDesktopSetup || service?.clipboardLinking || service?.automaticClipboardLinking || service?.transferring || remoteDesktop?.mutating); }
 function refreshContinuity() {
   if (!clipboardContinuity) return;
   if (!clipboardHistory?.toolsState().enabled || !clipboardSync?.state().continuity || clipboardSync.state().paused || !clipboardSync.state().enabled) clipboardContinuity.stop();
@@ -129,6 +129,11 @@ function safeHandler(method, fn) {
     }
   if (service?.appUpdating && !['getState', 'getUpdates', 'confirmRendererReady', 'hideWindow', 'setInteraction'].includes(method)) throw new Error('Wait for the app update to finish.');
   if (service?.clipboardLinking && !['getState', 'getClipboardHistory', 'updateClipboardTools', 'updateClipboardSync', 'updateClipboardPeer', 'revokeClipboardPeer', 'restoreClipboardPeer', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for the device connection to finish.');
+    if (service?.automaticClipboardLinking) {
+      const allowed = ['getState', 'enqueueFiles', 'enqueueText', 'removeItem', 'clearItems', 'undoClear', 'send', 'sendMany', 'pickFiles', 'captureClipboard', 'getReceived', 'refreshReceived', 'markReceivedRead', 'openReceivedFolder', 'addReceivedToShelf', 'getUpdates', 'checkForUpdates', 'downloadUpdate', 'cancelUpdate', 'openUpdateRelease', 'revealUpdateDownload', 'getClipboardHistory', 'updateClipboardTools', 'updateClipboardSync', 'updateClipboardPeer', 'revokeClipboardPeer', 'restoreClipboardPeer', 'updateClipboardPreferences', 'captureClipboardHistory', 'getClipboardEntry', 'copyClipboardEntry', 'setClipboardPinned', 'removeClipboardEntry', 'clearClipboardHistory', 'saveClipboardSnippet', 'addClipboardEntryToShelf', 'getTunnels', 'getMacInstallState', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'confirmRendererReady', 'hideWindow', 'quit', 'setInteraction'];
+      if (!allowed.includes(method)) throw new Error('Wait for the device connection to finish.');
+      if (['enqueueFiles', 'enqueueText', 'send', 'sendMany', 'pickFiles', 'captureClipboard', 'addReceivedToShelf', 'addClipboardEntryToShelf'].includes(method)) clipboardSync?.cancelAutomaticOwnerRequests();
+    }
     if (service?.authenticationSetup && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for connection setup to finish.');
     if (service?.configurationImport && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
     if (service?.configurationSaving && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for machine settings to finish saving.');
@@ -152,7 +157,16 @@ if (singleton) app.whenReady().then(async () => {
   if (!backgroundTest) {
     clipboardSync = new ClipboardSync({ dataDir: app.getPath('userData'), safeStorage, connect: peer => connectSsh(peer.sshTarget), isBlocked: () => !clipboardHistory.toolsState().enabled || clipboardHistory.settings.paused || clipboardHistory.isBlocked(), isLinkBlocked: () => !clipboardHistory.toolsState().enabled || clipboardHistory.settings?.paused === true || interaction.sensitiveEditing === true || !!(service?.authenticationSetup || service?.configurationImport || service?.configurationSaving || service?.appUpdating || service?.remoteInstallation || service?.macInstallation || service?.remoteDesktopSetup), onChange: () => { if (service?.state) publish(service.state); }, onItem: deliverSyncedClipboard });
     await clipboardSync.ready;
-    if (clipboardSync.state().enabled) { clipboardHistory.resetSyncBaseline(); await clipboardSync.setEnabled(clipboardHistory.tools.enabled); }
+    if (clipboardSync.state().enabled) {
+      clipboardHistory.resetSyncBaseline();
+      try { await clipboardSync.setEnabled(clipboardHistory.tools.enabled); }
+      catch {
+        // Optional clipboard transport must fail closed without losing the shelf.
+        try { await clipboardSync.setEnabled(false); } catch { /* Persistence can remain unavailable. */ }
+        clipboardSync.settings.enabled = false;
+        clipboardSync.noteError('Clipboard sync could not start and is off for this session. Check its preferences before trying again.');
+      }
+    }
   }
   service = new DriftService({ dataDir: app.getPath('userData'), onChange: publish, safeStorage });
   await service.getState();
@@ -180,7 +194,7 @@ if (singleton) app.whenReady().then(async () => {
   await received.initialized;
   remoteDesktop = new RemoteDesktop({ service, allowedOrigins: ['null'], onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:remote-desktop', state); } });
   remoteInstaller = new RemoteInstaller({ service, productName, version, edition: ['LexBridge', 'lex-drift'].includes(productName) ? 'personal' : 'clean', macInstaller, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:remote-install', state); } });
-  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.configurationSaving || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || remoteDesktop?.getState().session || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
+  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.configurationSaving || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.automaticClipboardLinking || remoteDesktop?.getState().session || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
   await updates.initialized;
   if (clipboardSync) clipboardContinuity = new ClipboardContinuity({
     sync: clipboardSync, getHosts: async () => (await service.getState()).hosts,
@@ -188,12 +202,12 @@ if (singleton) app.whenReady().then(async () => {
     onChange: () => { if (service?.state) publish(service.state); },
     linkHost: async candidate => {
       if (continuityBlocked()) throw new Error('Wait for active work to finish.');
-      service.clipboardLinking = true;
+      service.automaticClipboardLinking = true;
       try {
         const host = (await service.getState()).hosts.find(item => item.id === candidate.id);
         if (!host || host.status !== 'ready' || JSON.stringify(sshTargetFor(host)) !== JSON.stringify(sshTargetFor(candidate))) throw new Error('The saved machine changed.');
         return await clipboardSync.pairOwnedWith({ hostLabel: host.name, direction: 'both', sshTarget: sshTargetFor(host), automatic: true });
-      } finally { service.clipboardLinking = false; }
+      } finally { service.automaticClipboardLinking = false; }
     },
   });
   const initial = await service.getState();
@@ -258,7 +272,7 @@ if (singleton) app.whenReady().then(async () => {
   safeHandler('pairOwnedClipboardSync', async request => {
     if (!clipboardHistory.tools?.enabled) throw new Error('Enable Clipboard tools in Settings first.');
     if (!clipboardSync) throw new Error('Clipboard sync is unavailable.');
-    if (service.clipboardLinking) throw new Error('Wait for the device connection to finish.');
+    if (service.clipboardLinking || service.automaticClipboardLinking) throw new Error('Wait for the device connection to finish.');
     service.clipboardLinking = true;
     try {
       const host = (await service.getState()).hosts.find(item => item.id === request?.hostId);
@@ -355,7 +369,7 @@ if (singleton) app.whenReady().then(async () => {
   tray = new Tray(trayIcon);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Show ${productName}`, click: () => reveal('tray') },
-    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.appUpdating) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
+    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.automaticClipboardLinking || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.automaticClipboardLinking || service.appUpdating) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
     { type: 'separator' },
     { label: `Quit ${productName}`, click: () => { quitting = true; app.quit(); } },
   ]));
@@ -374,7 +388,7 @@ if (singleton) app.whenReady().then(async () => {
   publish(await service.getState());
   rendererLoaded = true;
   await confirmStartupIfReady();
-  service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.appUpdating) ? null : service.probeHosts({ automatic: true })).catch(console.error);
+  service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.automaticClipboardLinking || service.appUpdating) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   // Poll position only: never install keyboard/mouse hooks or record cursor history on disk.
   if (!backgroundTest && !(process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY))) {
     poll = setInterval(() => {
@@ -386,9 +400,9 @@ if (singleton) app.whenReady().then(async () => {
   if (!backgroundTest) clipboardTimer = setInterval(() => clipboardHistory.tick().catch(() => {}), 1500);
   refreshTimer = setInterval(async () => {
     const state = await service.getState();
-    if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.transferring || service.appUpdating) return;
+    if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.automaticClipboardLinking || service.transferring || service.appUpdating) return;
     if (state.history.some(receipt => receipt.status === 'sending')) return;
-    service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.appUpdating) ? null : service.probeHosts({ automatic: true })).catch(console.error);
+    service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.clipboardLinking || service.automaticClipboardLinking || service.appUpdating) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   }, 90000);
 }).catch(error => {
   console.error(error);

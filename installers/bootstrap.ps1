@@ -1,5 +1,5 @@
-# Save and review, then: powershell -NoProfile -File .\bootstrap.ps1 -Version 0.7.3
-param([ValidatePattern('^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$')][string]$Version = '0.7.3')
+# Save and review, then: powershell -NoProfile -File .\bootstrap.ps1 -Version 0.7.4
+param([ValidatePattern('^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$')][string]$Version = '0.7.4')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ([Environment]::OSVersion.Platform -ne 'Win32NT') { throw 'This bootstrap supports Windows only.' }

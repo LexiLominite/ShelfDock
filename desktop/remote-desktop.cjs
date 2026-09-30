@@ -28,7 +28,13 @@ class RemoteDesktop {
     this.assertIdle(); const generation = this.generation; const plan = this.plans.get(planId); this.plans.delete(planId); if (!plan || plan.expiresAt <= this.now()) throw new Error('This setup review expired or was already used. Review a new plan.');
     const host = await this.host(plan.hostId); this.assertIdle(); if (generation !== this.generation) throw new Error('Desktop setup was cancelled.'); if (endpointKey(host) !== plan.endpoint) throw new Error('This machine’s saved connection changed. Review a new plan.');
     if (this.owned) throw new Error('Disconnect the temporary server before setting up another.'); this.mutating = true; this.applyAbort = new AbortController(); plan.signal = this.applyAbort.signal;
-    try { const owned = await this.providers[plan.provider].apply(this.service, host, plan, credentials); this.owned = { ...owned, host, provider: plan.provider, port: plan.port }; if (this.closed || generation !== this.generation) await this.stopOwned(); this.emit(); return this.getState(); }
+    try {
+      const owned = await this.providers[plan.provider].apply(this.service, host, plan, credentials);
+      this.owned = { ...owned, host, provider: plan.provider, port: plan.port };
+      try { if (this.closed || generation !== this.generation) await this.stopOwned(); }
+      finally { this.emit(); }
+      return this.getState();
+    }
     finally { credentials = undefined; this.applyAbort = null; this.mutating = false; }
   }
   async start({ hostId, port = 5900 } = {}) {
