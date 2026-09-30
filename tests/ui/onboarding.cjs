@@ -4,8 +4,8 @@ const harness = require('./harness.cjs');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const KEY = 'lex-drift.onboarding.v1';
-const forbidden = ['updateClipboardTools', 'updateSettings', 'send', 'sendMany', 'probeHosts', 'configureAccess', 'forgetPassword', 'installOnMac', 'previewMacInstall', 'captureClipboard', 'captureClipboardHistory', 'hideWindow', 'quit', 'checkForUpdates', 'downloadUpdate', 'installUpdate', 'updateUpdatePreferences', 'startTunnel', 'restartTunnel', 'stopTunnel', 'openTunnelSite', 'refreshHosts', 'pickFiles', 'exportConfig', 'importConfig', 'openSettingsFolder', 'saveHost', 'removeHost', 'enqueueText', 'enqueueFiles', 'clearItems', 'undoClear'];
-const topics = ['Show and hide', 'Shelf and undo', 'Machines, LAN, and Tailscale', 'Passwords and SSH keys', 'Several items and machines', 'Received and sent', 'Clipboard, recording, and hiding', 'Open a remote service', 'Display density', 'Import and export', 'Updates and restart', 'Install on a Mac'];
+const forbidden = ['updateClipboardTools', 'updateSettings', 'send', 'sendMany', 'probeHosts', 'configureAccess', 'forgetPassword', 'installOnMac', 'previewMacInstall', 'captureClipboard', 'captureClipboardHistory', 'hideWindow', 'quit', 'checkForUpdates', 'downloadUpdate', 'installUpdate', 'updateUpdatePreferences', 'startTunnel', 'restartTunnel', 'stopTunnel', 'openTunnelSite', 'refreshHosts', 'pickFiles', 'exportConfig', 'importConfig', 'openSettingsFolder', 'saveHost', 'removeHost', 'enqueueText', 'enqueueFiles', 'clearItems', 'undoClear', 'previewRemoteInstall', 'installRemotely', 'inspectRemoteDesktop', 'previewRemoteDesktopSetup', 'applyRemoteDesktopSetup', 'startRemoteDesktop', 'updateClipboardSync', 'beginClipboardPairing', 'pairClipboardDevice', 'pairOwnedClipboardSync'];
+const topics = ['Show and hide', 'Shelf and undo', 'Machines, LAN, and Tailscale', 'Passwords and SSH keys', 'Several items and machines', 'Received and sent', 'Clipboard, recording, and hiding', 'Clipboard sync', 'Open a remote service', 'Display density', 'Import and export', 'Remote screen', 'Updates and restart', 'Install on another device'];
 
 function options(extra = {}) {
   return { onboarding: 'fresh', clipboardToolsEnabled: false, clipboardTabVisible: false, productName: 'LexBridge', ...extra };
@@ -55,7 +55,7 @@ async function assertInViewport(page, locator) {
     await quickStart.locator('li').filter({ hasText: 'deliberate shake' }).waitFor();
     await quickStart.locator('li').filter({ hasText: 'Or press' }).waitFor();
     await quickStart.locator('li').filter({ hasText: 'Use Tab' }).waitFor();
-    assert.equal(await quickStart.getByRole('button', { name: 'Install on a Mac', exact: true }).count(), 0);
+    assert.equal(await quickStart.getByRole('button', { name: 'Install on another device', exact: true }).count(), 0);
     await skipped.waitForFunction(() => document.querySelector('[role="dialog"]')?.contains(document.activeElement));
     await skipped.waitForFunction(() => window.__calls.filter((call) => call.method === 'setInteraction').at(-1)?.value?.editing === true);
     const evidenceDir = path.resolve(__dirname, '../../../../work/final-qa');
@@ -144,8 +144,8 @@ async function assertInViewport(page, locator) {
     await tour.getByRole('button', { name: 'Settings', exact: true }).click();
     await tour.getByRole('button', { name: 'Open feature guide', exact: true }).click();
     await tour.getByRole('dialog', { name: 'LexBridge feature guide' }).waitFor();
-    await tour.getByRole('button', { name: 'Install on a Mac', exact: true }).click();
-    assert.match(await tour.getByRole('region', { name: 'Install on a Mac' }).innerText(), /More menu/);
+    await tour.getByRole('button', { name: 'Install on another device', exact: true }).click();
+    assert.match(await tour.getByRole('region', { name: 'Install on another device' }).innerText(), /More menu/);
     await tour.getByRole('button', { name: 'Updates and restart', exact: true }).click();
     assert.match(await tour.getByRole('region', { name: 'Updates and restart' }).innerText(), /explicitly choose/);
     await tour.keyboard.press('Escape');

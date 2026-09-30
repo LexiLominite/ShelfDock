@@ -183,23 +183,48 @@ async function identifyInstallation({ platform, execPath, portableExecutable, is
 const POSIX_HELPER = `#!/bin/sh
 set -eu
 umask 077
-pid=$1; target=$2; staged=$3; backup=$4; result=$5; ready=$6; platform=$7; identity=$8; executable=$9
+pid=$1; target=$2; staged=$3; backup=$4; result=$5; ready=$6; platform=$7; identity=$8; executable=$9; started=\${10}
 case "$executable" in ShelfDock|LexBridge) ;; *) exit 1 ;; esac
 write_result() { printf '{"status":"%s"}\\n' "$1" > "$result.tmp"; mv "$result.tmp" "$result"; }
+restore_backup() {
+  [ -e "$backup" ] || return 1
+  if [ -e "$target" ]; then mv "$target" "$staged" || return 1; fi
+  mv "$backup" "$target"
+}
 printf 'ready' > "$ready"
 count=0
 while kill -0 "$pid" 2>/dev/null; do count=$((count+1)); [ "$count" -lt 300 ] || { write_result parent_running; exit 1; }; sleep 0.2; done
-[ ! -L "$target" ] && [ ! -L "$staged" ] && [ -e "$target" ] && [ -e "$staged" ] && [ ! -e "$backup" ] && [ ! -L "$backup" ] || { write_result changed; exit 1; }
+[ ! -L "$target" ] && [ ! -L "$staged" ] && [ -e "$target" ] && [ -e "$staged" ] && [ ! -e "$backup" ] && [ ! -L "$backup" ] && [ ! -e "$started" ] && [ ! -L "$started" ] || { write_result changed; exit 1; }
 if [ "$platform" = darwin ]; then actual=$(/usr/bin/stat -f '%d:%i' "$target"); else actual=$(stat -c '%d:%i' "$target"); fi
 [ "$actual" = "$identity" ] || { write_result changed; exit 1; }
 mv "$target" "$backup" || { write_result backup_failed; exit 1; }
-if ! mv "$staged" "$target"; then mv "$backup" "$target"; write_result rolled_back; exit 1; fi
+if ! mv "$staged" "$target"; then if restore_backup; then write_result rolled_back; else write_result failed; fi; exit 1; fi
 if [ "$platform" = darwin ]; then
-  if ! /usr/bin/open -g "$target" --args --background; then mv "$target" "$staged"; mv "$backup" "$target"; write_result rolled_back; /usr/bin/open -g "$target" --args --background; exit 1; fi
+  /usr/bin/open -g -W "$target" --args --background & new_pid=$!
 else
-  if [ ! -x "$target/$executable" ]; then mv "$target" "$staged"; mv "$backup" "$target"; write_result rolled_back; "$target/$executable" --background >/dev/null 2>&1 & exit 1; fi
-  "$target/$executable" --background >/dev/null 2>&1 &
+  if [ ! -x "$target/$executable" ]; then if restore_backup; then write_result rolled_back; "$target/$executable" --background >/dev/null 2>&1 & else write_result failed; fi; exit 1; fi
+  "$target/$executable" --background >/dev/null 2>&1 & new_pid=$!
 fi
+count=0
+while [ ! -f "$started" ]; do
+  count=$((count+1))
+  if [ "$count" -ge 300 ] || { [ -n "$new_pid" ] && ! kill -0 "$new_pid" 2>/dev/null; }; then
+    if [ -n "$new_pid" ] && kill -0 "$new_pid" 2>/dev/null; then kill "$new_pid" 2>/dev/null || true; fi
+    if [ "$platform" = darwin ]; then
+      # open -W tracks the app lifetime but is not the app process itself.
+      # Stop only executables in this exact replaced bundle before restoring it.
+      /bin/ps -axo pid=,comm= | while read -r app_pid command; do
+        if [ "$command" = "$target/Contents/MacOS/$executable" ]; then kill "$app_pid" 2>/dev/null || true; fi
+      done
+    fi
+    if restore_backup; then
+      write_result rolled_back
+      if [ "$platform" = darwin ]; then /usr/bin/open -g "$target" --args --background || true; else "$target/$executable" --background >/dev/null 2>&1 & fi
+    else write_result failed; fi
+    exit 1
+  fi
+  sleep 0.2
+done
 rmdir "$(dirname "$staged")" 2>/dev/null || true
 write_result installed
 `;
@@ -207,11 +232,15 @@ const WINDOWS_HELPER = String.raw`param([string]$Plan)
 $ErrorActionPreference = 'Stop'
 $p = Get-Content -LiteralPath $Plan -Raw | ConvertFrom-Json
 function Result([string]$state) { @{status=$state} | ConvertTo-Json -Compress | Set-Content -LiteralPath ($p.result + '.tmp') -Encoding UTF8; Move-Item -LiteralPath ($p.result + '.tmp') -Destination $p.result -Force }
+function RestoreBackup {
+  try { if (Test-Path -LiteralPath $p.target) { Move-Item -LiteralPath $p.target -Destination $p.staged } } catch { return $false }
+  try { Move-Item -LiteralPath $p.backup -Destination $p.target; return $true } catch { return $false }
+}
 Set-Content -LiteralPath $p.ready -Value 'ready' -Encoding ASCII
 $deadline = (Get-Date).AddSeconds(60)
 while (Get-Process -Id $p.pid -ErrorAction SilentlyContinue) { if ((Get-Date) -gt $deadline) { Result 'parent_running'; exit 1 }; Start-Sleep -Milliseconds 200 }
 try {
-  if ((Test-Path -LiteralPath $p.backup) -or !(Test-Path -LiteralPath $p.target) -or !(Test-Path -LiteralPath $p.staged)) { throw 'Changed destination' }
+  if ((Test-Path -LiteralPath $p.backup) -or (Test-Path -LiteralPath $p.started) -or !(Test-Path -LiteralPath $p.target) -or !(Test-Path -LiteralPath $p.staged)) { throw 'Changed destination' }
   foreach ($f in @($p.target, $p.staged)) { if ((Get-Item -LiteralPath $f).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Unsafe destination' } }
   if ((Get-FileHash -LiteralPath $p.target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.oldHash) { throw 'Changed executable' }
   if ((Get-FileHash -LiteralPath $p.staged -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.sha256) { throw 'Changed download' }
@@ -220,8 +249,20 @@ try {
     try { Move-Item -LiteralPath $p.target -Destination $p.backup; break }
     catch { if ((Get-Date) -gt $moveDeadline) { throw }; Start-Sleep -Milliseconds 200; if ((Get-FileHash -LiteralPath $p.target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.oldHash) { throw 'Changed executable' } }
   }
-  try { Move-Item -LiteralPath $p.staged -Destination $p.target; Start-Process -FilePath $p.target -ArgumentList '--background' | Out-Null }
-  catch { if (Test-Path -LiteralPath $p.target) { Move-Item -LiteralPath $p.target -Destination $p.staged }; Move-Item -LiteralPath $p.backup -Destination $p.target; Result 'rolled_back'; Start-Process -FilePath $p.target -ArgumentList '--background'; exit 1 }
+  try {
+    Move-Item -LiteralPath $p.staged -Destination $p.target
+    $newProcess = Start-Process -FilePath $p.target -ArgumentList '--background' -PassThru
+    $startupDeadline = (Get-Date).AddSeconds(60)
+    while (!(Test-Path -LiteralPath $p.started)) {
+      if ((Get-Date) -gt $startupDeadline -or $newProcess.HasExited) { throw 'Startup was not confirmed' }
+      Start-Sleep -Milliseconds 200
+    }
+  }
+  catch {
+    if ($newProcess -and !$newProcess.HasExited) { Stop-Process -Id $newProcess.Id -Force -ErrorAction SilentlyContinue }
+    if (RestoreBackup) { Result 'rolled_back'; Start-Process -FilePath $p.target -ArgumentList '--background' | Out-Null } else { Result 'failed' }
+    exit 1
+  }
   Result 'installed'
   Remove-Item -LiteralPath (Split-Path -Parent $p.staged) -ErrorAction SilentlyContinue
 } catch { Result 'failed'; exit 1 }

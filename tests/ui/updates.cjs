@@ -37,9 +37,7 @@ const verifyBounds = async page => {
       assert.equal(await calls(page, 'checkForUpdates'), 0, 'Opening updates never performs an unrequested check');
       const autoCheck = page.getByRole('checkbox', { name: /^Check automatically/ });
       const autoDownload = page.getByRole('checkbox', { name: /^Download updates in the background/ });
-      assert.equal(await autoCheck.isChecked(), false); assert.equal(await autoDownload.isChecked(), false); assert.equal(await autoDownload.isDisabled(), true);
-      await autoCheck.check(); await autoDownload.check();
-      assert.equal(await autoDownload.isChecked(), true);
+      assert.equal(await autoCheck.isChecked(), true); assert.equal(await autoDownload.isChecked(), true); assert.equal(await autoDownload.isDisabled(), false);
       await autoCheck.uncheck(); assert.equal(await autoDownload.isChecked(), false); assert.equal(await autoDownload.isDisabled(), true);
       await page.getByRole('button', { name: 'Check for updates', exact: true }).click();
       await page.getByText('Version 0.5.1 is available.', { exact: true }).waitFor();

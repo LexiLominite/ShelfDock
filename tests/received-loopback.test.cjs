@@ -13,9 +13,22 @@ const execute = promisify(execFile);
 
 test('actual OpenSSH/SCP over loopback delivers a file and folder into another app inbox with strict host trust', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dropharbor-receive-ssh-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const remoteHome = path.join(directory, 'receiver'); const desktopDir = path.join(remoteHome, 'Desktop'); await fs.mkdir(desktopDir, { recursive: true });
-  const serverKey = utils.generateKeyPairSync('ed25519'); const clientKey = utils.generateKeyPairSync('ed25519');
-  const keyFile = path.join(directory, 'fixture_key'); await fs.writeFile(keyFile, clientKey.private, { mode: 0o600 });
+  // ssh2 1.17's generator strips legitimate leading zero bytes from the
+  // Ed25519 public key, producing malformed OpenSSH keys about 1/256 times.
+  // Use genuine fresh OpenSSH keys, without retrying malformed fixtures.
+  const makeKey = async name => {
+    const file = path.join(directory, name);
+    await execute('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'loopback-fixture', '-f', file], { timeout: 5000 });
+    const privateKey = await fs.readFile(file, 'utf8');
+    const publicKey = (await fs.readFile(file + '.pub', 'utf8')).trim();
+    assert.equal(utils.parseKey(privateKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 private key');
+    assert.equal(utils.parseKey(publicKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 public key');
+    return { private: privateKey, public: publicKey, file };
+  };
+  const serverKey = await makeKey('server_key'); const clientKey = await makeKey('client_key');
+  const keyFile = clientKey.file;
   const clients = new Set(); const processes = new Set();
   const server = new Server({ hostKeys: [serverKey.private] }, client => {
     clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client));
@@ -39,7 +52,7 @@ test('actual OpenSSH/SCP over loopback delivers a file and folder into another a
     }));
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  t.after(async () => { for (const child of processes) child.kill(); for (const client of clients) client.destroy(); await new Promise(resolve => server.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { for (const child of processes) child.kill(); for (const client of clients) client.destroy(); await new Promise(resolve => server.close(resolve)); });
   const port = server.address().port; const known = path.join(directory, 'known_hosts'); await fs.writeFile(known, `[127.0.0.1]:${port} ${serverKey.public}\n`);
   const calls = [];
   const run = async (command, args, options = {}) => {

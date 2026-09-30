@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const { Worker } = require('node:worker_threads');
 const { pathToFileURL } = require('node:url');
 const { parseFileURIs, isNonFileURIList, validateClipboardPNG } = require('./clipboard.cjs');
+const { classifyText } = require('./clipboard-sync-protocol.cjs');
 const DEFAULTS = Object.freeze({ enabled: false, paused: false, maxItems: 200, retentionDays: 30 });
 const TOOLS_DEFAULTS = Object.freeze({ enabled: false, showTab: true, historyConsent: false });
 const MAX_ITEM = 8 * 1024 * 1024, MAX_TEXT = 1024 * 1024, MAX_TOTAL = 32 * 1024 * 1024;
@@ -22,14 +23,18 @@ function settingsFor(patch, base = DEFAULTS) {
   }
   return out;
 }
+const SYNC_EVENT_TYPE = 'application/x-shelfdock-sync-event';
+function syncKindFor(text) { return classifyText(text).kind; }
 class ClipboardHistory {
-  constructor({ dataDir, clipboard, ClipboardItem, safeStorage, platform = process.platform, onChange = () => {}, isBlocked = () => false, now = Date.now }) {
+  constructor({ dataDir, clipboard, ClipboardItem, safeStorage, platform = process.platform, onChange = () => {}, onLocalItem = () => {}, isSyncEnabled = () => false, isBlocked = () => false, now = Date.now }) {
     this.dir = path.join(dataDir, 'clipboard-history'); this.clipboard = clipboard; this.ClipboardItem = ClipboardItem; this.safeStorage = safeStorage; this.platform = platform;
-    this.tools = { ...TOOLS_DEFAULTS }; this.disablingTools = false; this.onChange = onChange; this.isBlocked = isBlocked; this.now = now; this.settings = { ...DEFAULTS }; this.entries = []; this.queue = Promise.resolve(); this.epoch = 0; this.lastHash = ''; this.busy = false; this.error = ''; this.initialized = this.load();
+    this.tools = { ...TOOLS_DEFAULTS }; this.disablingTools = false; this.onChange = onChange; this.onLocalItem = onLocalItem; this.isSyncEnabled = isSyncEnabled; this.syncBaselinePending = false; this.isBlocked = isBlocked; this.now = now; this.settings = { ...DEFAULTS }; this.entries = []; this.queue = Promise.resolve(); this.localSubmissions = Promise.resolve(); this.epoch = 0; this.lastHash = ''; this.syncEventIds = new Set(); this.syncSuppressHash = ''; this.syncSuppressUntil = 0; this.busy = false; this.error = ''; this.initialized = this.load();
   }
   available() { try { return !!this.safeStorage?.isEncryptionAvailable() && (this.platform !== 'linux' || ['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(this.safeStorage.getSelectedStorageBackend?.())); } catch { return false; } }
   toolsState() { return { enabled: this.tools.enabled && !this.disablingTools, showTab: this.tools.showTab, historyEnabled: this.historyEnabled() }; }
   historyEnabled() { return this.tools.enabled && !this.disablingTools && this.tools.historyConsent && this.settings.enabled; }
+  syncActive() { try { return this.tools.enabled && !this.disablingTools && this.isSyncEnabled() === true; } catch { return false; } }
+  resetSyncBaseline() { this.syncBaselinePending = true; }
   requireTools() { if (!this.tools.enabled || this.disablingTools) throw new Error('Enable Clipboard tools in Settings first.'); }
   async saveTools(settings) { await fs.mkdir(this.dir, { recursive: true, mode: 0o700 }); await this.atomic('tools-configured-v1', '1'); await this.atomic('tools.json', JSON.stringify({ ...settings, version: 2 })); this.tools = settings; }
   async load() {
@@ -77,6 +82,9 @@ class ClipboardHistory {
     if (entry.kind === 'text' && (typeof entry.text !== 'string' || Buffer.byteLength(entry.text) > MAX_TEXT || (entry.html && (typeof entry.html !== 'string' || Buffer.byteLength(entry.html) > MAX_TEXT)))) throw new Error('Invalid clipboard text.');
     if (entry.kind === 'image') validateClipboardPNG(Buffer.from(entry.png, 'base64'));
     if (entry.kind === 'files') parseFileURIs(entry.files.map(file => pathToFileURL(file).href).join('\n'), this.platform);
+    if (entry.eventId !== undefined && (typeof entry.eventId !== 'string' || !/^[0-9a-f-]{36}$/.test(entry.eventId))) throw new Error('Invalid clipboard entry.');
+    if (entry.sourceLabel !== undefined && (typeof entry.sourceLabel !== 'string' || !entry.sourceLabel || entry.sourceLabel.length > 120 || /[\x00-\x1f\x7f]/.test(entry.sourceLabel))) throw new Error('Invalid clipboard entry.');
+    if (entry.token !== undefined || entry.sshTarget !== undefined) throw new Error('Invalid clipboard entry.');
   }
   trim() {
     const cutoff = this.now() - this.settings.retentionDays * 86400000;
@@ -106,7 +114,7 @@ class ClipboardHistory {
   }
   snapshot({ query = '', filter = 'all' } = {}) {
     const needle = String(query).slice(0, 1000).toLowerCase();
-    const entries = (this.tools.enabled && !this.disablingTools ? this.entries : []).filter(e => (filter === 'all' || (filter === 'pinned' ? e.pinned : e.kind === filter)) && (!needle || `${e.title}\n${e.text || ''}\n${(e.files || []).join('\n')}`.toLowerCase().includes(needle))).map(e => ({ id: e.id, kind: e.kind, title: e.title, preview: e.kind === 'text' ? e.text.slice(0, 220) : e.kind === 'files' ? e.files.map(f => path.basename(f)).join(', ').slice(0,220) : 'PNG image', pinned: e.pinned, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt, size: e.size }));
+    const entries = (this.tools.enabled && !this.disablingTools ? this.entries : []).filter(e => (filter === 'all' || (filter === 'pinned' ? e.pinned : e.kind === filter)) && (!needle || `${e.title}\n${e.text || ''}\n${(e.files || []).join('\n')}`.toLowerCase().includes(needle))).map(e => ({ id: e.id, kind: e.kind, title: e.title, preview: e.kind === 'text' ? e.text.slice(0, 220) : e.kind === 'files' ? e.files.map(f => path.basename(f)).join(', ').slice(0,220) : 'PNG image', pinned: e.pinned, createdAt: e.createdAt, lastUsedAt: e.lastUsedAt, size: e.size, ...(e.sourceLabel ? { sourceLabel: e.sourceLabel } : {}) }));
     return { entries, settings: { ...this.settings, enabled: this.historyEnabled() }, tools: this.toolsState(), available: this.available(), error: this.error || this.toolsError || undefined };
   }
   async getState(options) { await this.initialized; return this.snapshot(options); }
@@ -145,53 +153,125 @@ class ClipboardHistory {
       } catch (e) { this.settings = previous; throw e; }
     });
   }
-  async readCurrent() {
-    if (typeof this.clipboard?.has === 'function') for (const marker of MARKERS) if (await this.clipboard.has(`electron application/osclipboard;format="${marker}"`)) return null;
+  async readCurrent({ snapshot = false } = {}) {
+    if (typeof this.clipboard?.has === 'function') for (const marker of MARKERS) if (await this.clipboard.has(`electron application/osclipboard;format="${marker}"`)) return snapshot ? { kind: 'private' } : null;
     const items = await this.clipboard.read();
     if (!Array.isArray(items) || items.length > 500) throw new Error('The clipboard contains too many items.');
-    for (const item of items) if (item.types?.some(type => MARKERS.some(marker => type.includes(marker)))) return null;
+    for (const item of items) if (item.types?.some(type => MARKERS.some(marker => type.includes(marker)))) return snapshot ? { kind: 'private' } : null;
     const find = type => items.find(item => item.types?.includes(type));
     const bytes = async (item, type, max) => { const blob = await item.getType(type); if (blob.size > max) throw new Error('This clipboard item is too large for history. Use the transfer shelf instead.'); const data = Buffer.from(await blob.arrayBuffer()); if (data.length > max) throw new Error('Clipboard size limit exceeded.'); return data; };
+    let syncEventId = '';
+    const syncCarrier = find(SYNC_EVENT_TYPE);
+    if (syncCarrier) { try { const rawId = (await bytes(syncCarrier, SYNC_EVENT_TYPE, 128)).toString('utf8').trim(); if (/^[0-9a-f-]{36}$/.test(rawId)) syncEventId = rawId; } catch {} }
+    const stamp = payload => payload && syncEventId ? { ...payload, syncEventId } : payload;
     const fileItems = items.filter(item => item.types?.includes('text/uri-list'));
     if (fileItems.length) {
       const lists = await Promise.all(fileItems.map(async item => (await bytes(item, 'text/uri-list', MAX_TEXT)).toString('utf8')));
       if (!lists.every(isNonFileURIList)) {
         const unique = [...new Set(lists.flatMap(list => parseFileURIs(list, this.platform)))];
         if (unique.length > 500) throw new Error('Copy at most 500 files.');
-        return { kind: 'files', files: unique, title: unique.length === 1 ? path.basename(unique[0]) : `${unique.length} copied files` };
+        return stamp({ kind: 'files', files: unique, title: unique.length === 1 ? path.basename(unique[0]) : `${unique.length} copied files` });
       }
     }
-    const png = find('image/png'); if (png) return { kind: 'image', png: validateClipboardPNG(await bytes(png, 'image/png', MAX_ITEM)).toString('base64'), title: 'Copied image' };
-    const plain = find('text/plain'); if (plain) { const text = (await bytes(plain, 'text/plain', MAX_TEXT)).toString('utf8'); if (!text) return null; const htmlItem = find('text/html'); const html = htmlItem ? (await bytes(htmlItem, 'text/html', MAX_TEXT)).toString('utf8') : undefined; return { kind: 'text', text, ...(html ? { html } : {}), title: text.replace(/\s+/g, ' ').slice(0, 80) }; }
-    return null;
+    const png = find('image/png'); if (png) return stamp({ kind: 'image', png: validateClipboardPNG(await bytes(png, 'image/png', MAX_ITEM)).toString('base64'), title: 'Copied image' });
+    const plain = find('text/plain'); if (plain) { const text = (await bytes(plain, 'text/plain', MAX_TEXT)).toString('utf8'); if (!text) return snapshot ? { kind: 'empty' } : null; const htmlItem = find('text/html'); const html = htmlItem ? (await bytes(htmlItem, 'text/html', MAX_TEXT)).toString('utf8') : undefined; return stamp({ kind: 'text', text, ...(html ? { html } : {}), title: text.replace(/\s+/g, ' ').slice(0, 80) }); }
+    return snapshot ? { kind: items.length ? 'unsupported' : 'empty' } : null;
   }
-  async store(content, { pinned = false, automatic = false } = {}) {
+  contentHash(content) { return crypto.createHash('sha256').update(JSON.stringify([content.kind, content.text, content.html, content.png, content.files])).digest('hex'); }
+  noteSyncEvent(eventId, hash) {
+    if (typeof eventId === 'string' && /^[0-9a-f-]{36}$/.test(eventId)) {
+      this.syncEventIds.add(eventId);
+      while (this.syncEventIds.size > 100) this.syncEventIds.delete(this.syncEventIds.values().next().value);
+    }
+    if (typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)) { this.syncSuppressHash = hash; this.syncSuppressUntil = this.now() + 5000; }
+  }
+  acknowledgeSyncWrite(hash) { if (typeof hash === 'string' && /^[0-9a-f]{64}$/.test(hash)) this.lastHash = hash; }
+  submissionFor(content, eventId, createdAt) {
+    if (content.kind === 'image') return { eventId, kind: 'png', png: content.png, createdAt };
+    return { eventId, kind: syncKindFor(content.text), text: content.text, createdAt };
+  }
+  emitLocal(payload) {
+    this.pendingLocalSubmission = payload;
+    if (this.localSubmissionBusy) return;
+    this.localSubmissionBusy = true;
+    this.localSubmissions = (async () => {
+      try {
+        while (this.pendingLocalSubmission) {
+          const latest = this.pendingLocalSubmission;
+          this.pendingLocalSubmission = null;
+          if (this.syncActive() && !this.isBlocked()) { try { await this.onLocalItem?.(latest); } catch {} }
+        }
+      } finally { this.localSubmissionBusy = false; }
+    })();
+  }
+  ignoredSync(syncEventId) { return typeof syncEventId === 'string' && (this.syncEventIds.has(syncEventId) || this.entries.some(entry => entry.eventId === syncEventId)); }
+  async store(content, { pinned = false, automatic = false, fromSync = false, syncCapture = false, eventId, syncEventId } = {}) {
     if (this.preferencesRecovery) throw new Error(this.error);
-    const hash = crypto.createHash('sha256').update(JSON.stringify([content.kind,content.text,content.html,content.png,content.files])).digest('hex');
-    if (automatic && hash === this.lastHash) return false;
-    const existing = this.entries.find(e => e.hash === hash);
-    if (existing) { if (automatic && this.lastHash === hash) return false; this.entries = [existing, ...this.entries.filter(e => e.id !== existing.id)]; existing.lastUsedAt = this.now(); existing.pinned ||= pinned; if (pinned) existing.title = content.title; }
-    else { const size = Buffer.byteLength(JSON.stringify(content)); const entry = { ...content, id: crypto.randomUUID(), hash, pinned, size, createdAt: this.now(), lastUsedAt: this.now() }; this.validateEntry(entry); this.entries.unshift(entry); }
-    this.trim(); if (!this.entries.some(entry => entry.hash === hash)) throw new Error('Favourites fill the history limit. Unpin or remove an item first.'); await this.persist(); this.lastHash = hash; return true;
+    content = { ...content };
+    delete content.syncEventId; delete content.token; delete content.sshTarget;
+    if (fromSync && eventId && this.entries.some(entry => entry.eventId === eventId)) return false;
+    const hash = this.contentHash(content);
+    if (!fromSync && this.ignoredSync(syncEventId)) return false;
+    if (!fromSync && automatic && (hash === this.lastHash || (hash === this.syncSuppressHash && this.now() <= this.syncSuppressUntil))) return false;
+    const existing = this.entries.find(entry => entry.hash === hash);
+    let submission = null;
+    if (existing) {
+      if (!fromSync && automatic && this.lastHash === hash) return false;
+      this.entries = [existing, ...this.entries.filter(entry => entry.id !== existing.id)];
+      existing.lastUsedAt = this.now(); existing.pinned ||= pinned; if (pinned) existing.title = content.title;
+      if (fromSync) { existing.eventId = eventId; if (content.sourceLabel) existing.sourceLabel = content.sourceLabel; this.validateEntry(existing); }
+      else if (content.kind === 'text' || content.kind === 'image') { const localEventId = crypto.randomUUID(); existing.eventId = localEventId; submission = this.submissionFor(content, localEventId, existing.lastUsedAt); }
+    } else {
+      const size = Buffer.byteLength(JSON.stringify(content));
+      const entry = { ...content, id: crypto.randomUUID(), hash, pinned, size, createdAt: this.now(), lastUsedAt: this.now(), ...(fromSync && eventId ? { eventId } : {}) };
+      if (!fromSync && (content.kind === 'text' || content.kind === 'image')) { entry.eventId = crypto.randomUUID(); submission = this.submissionFor(content, entry.eventId, entry.createdAt); }
+      this.validateEntry(entry); this.entries.unshift(entry);
+    }
+    this.trim(); if (!this.entries.some(entry => entry.hash === hash)) throw new Error('Favourites fill the history limit. Unpin or remove an item first.'); await this.persist(); if (!fromSync) this.lastHash = hash; if (submission && syncCapture && this.syncActive()) this.emitLocal(submission); return true;
+  }
+  ingestSync({ eventId, kind, text, png, sourceLabel } = {}) {
+    if (typeof eventId !== 'string' || !/^[0-9a-f-]{36}$/.test(eventId)) return Promise.reject(new Error('This clipboard item cannot be synced.'));
+    return this.mutate(async () => {
+      this.requireTools();
+      let content;
+      if (kind === 'png') content = { kind: 'image', png, title: 'Copied image' };
+      else if (kind === 'text' || kind === 'url') { if (typeof text !== 'string' || !text || Buffer.byteLength(text) > MAX_TEXT) throw new Error('This clipboard item cannot be synced.'); content = { kind: 'text', text, title: text.replace(/\s+/g, ' ').slice(0, 80) }; }
+      else throw new Error('This clipboard item cannot be synced.');
+      if (sourceLabel !== undefined) { if (typeof sourceLabel !== 'string' || !sourceLabel.trim() || sourceLabel.length > 120 || /[\x00-\x1f\x7f]/.test(sourceLabel)) throw new Error('This clipboard item cannot be synced.'); content.sourceLabel = sourceLabel.trim(); }
+      this.noteSyncEvent(eventId);
+      await this.store(content, { fromSync: true, eventId });
+    }, { requireTools: false });
   }
   capture({ automatic = false } = {}) {
     const epoch = this.epoch;
     return this.mutate(async () => {
-      if (automatic && (!this.historyEnabled() || this.settings.paused || this.isBlocked() || epoch !== this.epoch)) return;
+      if (automatic && ((!this.historyEnabled() && !this.syncActive()) || this.settings.paused || this.isBlocked() || epoch !== this.epoch)) return;
       this.requireTools();
       if (!this.available()) throw new Error('Unlock a secure system secret store to save clipboard history.');
       if (this.loadFailed) throw new Error(this.error);
-      const content = await this.readCurrent();
-      if (epoch !== this.epoch || !this.tools.enabled || this.disablingTools || (automatic && (this.isBlocked() || !this.historyEnabled() || this.settings.paused))) return;
-      if (!content) { if (!automatic) throw new Error('The clipboard is empty, unsupported, or marked private by its source app.'); return; }
-      if (await this.store(content, { automatic })) this.emit();
+      const raw = await this.readCurrent();
+      if (epoch !== this.epoch || !this.tools.enabled || this.disablingTools || (automatic && (this.isBlocked() || (!this.historyEnabled() && !this.syncActive()) || this.settings.paused))) return;
+      if (!raw) { if (!automatic) throw new Error('The clipboard is empty, unsupported, or marked private by its source app.'); return; }
+      const { syncEventId, ...content } = raw;
+      if (this.ignoredSync(syncEventId)) { this.lastHash = this.contentHash(content); return; }
+      if (automatic && this.syncSuppressHash && this.contentHash(content) === this.syncSuppressHash && this.now() <= this.syncSuppressUntil) { this.lastHash = this.syncSuppressHash; return; }
+      const hash = this.contentHash(content);
+      const baseline = this.syncBaselinePending;
+      this.syncBaselinePending = false;
+      if (automatic && !this.historyEnabled()) {
+        if (hash === this.lastHash) return;
+        this.lastHash = hash;
+        if (!baseline && this.syncActive() && ['text', 'image'].includes(content.kind)) this.emitLocal(this.submissionFor(content, crypto.randomUUID(), this.now()));
+        return;
+      }
+      if (await this.store(content, { automatic, syncEventId, syncCapture: !baseline && this.syncActive() })) this.emit();
     }, { notify: false, returnState: !automatic, requireTools: !automatic });
   }
   async tick() {
     await this.initialized;
     if (!this.tools.enabled || this.disablingTools) return;
     if (this.available() && !this.loadFailed && !this.preferencesRecovery && this.entries.some(e => !e.pinned && e.createdAt < this.now() - this.settings.retentionDays * 86400000)) await this.mutate(async () => { this.trim(); await this.persist(); }, { returnState: false });
-    if (!this.historyEnabled() || this.settings.paused || this.busy || this.isBlocked() || !this.available() || this.loadFailed) return;
+    if ((!this.historyEnabled() && !this.syncActive()) || this.settings.paused || this.busy || this.isBlocked() || !this.available() || this.loadFailed) return;
     this.busy = true; try { await this.capture({ automatic: true }); } catch { /* Never emit clipboard contents or popup from a background read. */ } finally { this.busy = false; }
   }
   async detail(id) { await this.initialized; this.requireTools(); const e = this.entries.find(e => e.id === id); if (!e) throw new Error('This clipboard item is no longer available.'); return { id: e.id, kind: e.kind, title: e.title, ...(e.kind === 'text' ? { text: e.text, html: e.html } : e.kind === 'image' ? { imageDataURL: 'data:image/png;base64,'+e.png } : { files: [...e.files] }) }; }
@@ -199,7 +279,7 @@ class ClipboardHistory {
     return this.mutate(async () => {
       const e = this.entries.find(entry => entry.id === id); if (!e) throw new Error('This clipboard item is no longer available.');
       const data = e.kind === 'text' ? { 'text/plain': new Blob([e.text], { type: 'text/plain' }), ...(!plainText && e.html ? { 'text/html': new Blob([e.html], { type: 'text/html' }) } : {}) } : e.kind === 'image' ? { 'image/png': new Blob([Buffer.from(e.png, 'base64')], { type: 'image/png' }) } : { 'text/uri-list': new Blob([e.files.map(file => pathToFileURL(file).href).join('\r\n')], { type: 'text/uri-list' }) };
-      await this.clipboard.write([new this.ClipboardItem(data)]); this.lastHash = e.kind === 'text' && plainText ? crypto.createHash('sha256').update(JSON.stringify(['text',e.text,undefined,undefined,undefined])).digest('hex') : e.hash; e.lastUsedAt = this.now();
+      await this.clipboard.write([new this.ClipboardItem(data)]); if (this.syncActive() && !this.isBlocked() && ['text', 'image'].includes(e.kind)) this.emitLocal(this.submissionFor(e, crypto.randomUUID(), this.now())); this.lastHash = e.kind === 'text' && plainText ? crypto.createHash('sha256').update(JSON.stringify(['text',e.text,undefined,undefined,undefined])).digest('hex') : e.hash; e.lastUsedAt = this.now();
     });
   }
   setPinned({ id, pinned }) { return this.mutate(async () => { if (typeof pinned !== 'boolean') throw new Error('Choose a favourite state.'); const e = this.entries.find(entry => entry.id === id); if (!e) throw new Error('This clipboard item is no longer available.'); e.pinned = pinned; this.trim(); await this.persist(); }); }
@@ -208,4 +288,4 @@ class ClipboardHistory {
   saveSnippet({ text, title = '' }) { return this.mutate(async () => { if (typeof text !== 'string' || !text.trim() || Buffer.byteLength(text) > MAX_TEXT) throw new Error('Enter a snippet up to 1 MB.'); if (typeof title !== 'string' || title.length > 120) throw new Error('Use a title up to 120 characters.'); await this.store({ kind: 'text', text, title: title.trim() || text.replace(/\s+/g,' ').slice(0,80) }, { pinned: true }); }); }
   async addToShelf(id, service) { const e = await this.detail(id); if (e.kind === 'text') return service.enqueueText(e.text); if (e.kind === 'files') return service.enqueueFiles(e.files); return service.enqueueClipboardImage(Buffer.from(e.imageDataURL.split(',')[1], 'base64')); }
 }
-module.exports = { ClipboardHistory, settingsFor, DEFAULTS, TOOLS_DEFAULTS, MAX_TOTAL };
+module.exports = { ClipboardHistory, settingsFor, DEFAULTS, TOOLS_DEFAULTS, MAX_TOTAL, SYNC_EVENT_TYPE };

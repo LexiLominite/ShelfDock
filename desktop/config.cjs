@@ -74,7 +74,11 @@ function createConfig(state) {
   const hosts = (state.hosts || []).filter(host => typeof host.user === 'string' && host.user.trim()).filter(host => {
     const key = endpoint(host); if (seen.has(key)) return false; seen.add(key); return true;
   }).map(host => Object.fromEntries(HOST_FIELDS.map(key => [key, host[key]])));
-  const settings = Object.fromEntries(Object.keys(SETTINGS_DEFAULTS).map(key => [key, state.settings?.[key] ?? SETTINGS_DEFAULTS[key]]));
+  // Portable setup never includes clipboard-sync pairings, tokens, or that directory.
+  const settingsSource = { ...(state.settings || {}) };
+  delete settingsSource.clipboardSync;
+  delete settingsSource.token;
+  const settings = Object.fromEntries(Object.keys(SETTINGS_DEFAULTS).map(key => [key, settingsSource[key] ?? SETTINGS_DEFAULTS[key]]));
   return validateConfig({ schema: SCHEMA, version: VERSION, hosts, settings });
 }
 
@@ -83,6 +87,8 @@ function createConfig(state) {
 async function importConfiguration(service, input) {
   const config = validateConfig(input);
   await service.initialized;
+  if (service.remoteInstallation) throw new Error('Wait for remote installation to finish before importing settings.');
+  if (service.remoteDesktopSetup) throw new Error('Wait for remote desktop setup to finish before importing settings.');
   if (service.macInstallation) throw new Error('Wait for Mac installation to finish before importing settings.');
   if (service.configurationImport) throw new Error('Wait for the current configuration import to finish.');
   if (service.tunnelSetup) throw new Error('Wait for forwarding setup to finish before importing settings.');

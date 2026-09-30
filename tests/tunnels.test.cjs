@@ -30,9 +30,21 @@ async function closedPort(port) {
 }
 async function fixture(t, { password = false, reportWildcard = false, website = false, targetName = '127.0.0.1', destinationPort } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dropharbor-tunnel-test-'));
-  const keyPair = () => { for (let attempt = 0; attempt < 10; attempt++) { const value = utils.generateKeyPairSync('ed25519'); if (!(utils.parseKey(value.private) instanceof Error)) return value; } throw new Error('Could not generate a valid ephemeral fixture key.'); };
-  const serverKey = keyPair(); const userKey = keyPair();
-  const identity = path.join(directory, 'id_ed25519'); await fs.writeFile(identity, userKey.private, { mode: 0o600 });
+  let cleanupResources = async () => {};
+  t.after(async () => { try { await cleanupResources(); } finally { await fs.rm(directory, { recursive: true, force: true }); } });
+  // Generate genuine OpenSSH keys once; ssh2's generator can truncate leading
+  // zero bytes in Ed25519 public keys and create malformed fixtures.
+  const makeKey = async name => {
+    const file = path.join(directory, name);
+    await execute('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'loopback-fixture', '-f', file], { timeout: 5000 });
+    const privateKey = await fs.readFile(file, 'utf8');
+    const publicKey = (await fs.readFile(file + '.pub', 'utf8')).trim();
+    assert.equal(utils.parseKey(privateKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 private key');
+    assert.equal(utils.parseKey(publicKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 public key');
+    return { private: privateKey, public: publicKey, file };
+  };
+  const serverKey = await makeKey('fixture-host-key'); const userKey = await makeKey('id_ed25519');
+  const identity = userKey.file;
   const authorized = utils.parseKey(userKey.public); const clients = new Set(); const sockets = new Set(); const remoteListeners = new Set();
   const track = socket => { sockets.add(socket); socket.on('error', () => {}); socket.once('close', () => sockets.delete(socket)); return socket; };
   const requestedTargets = []; const websiteRequests = [];
@@ -86,7 +98,7 @@ async function fixture(t, { password = false, reportWildcard = false, website = 
   await auth.initialized; if (password) await auth.save(host, 'fixture-password');
   const service = { passwordAuth: auth, getState: async () => ({ hosts: [host] }), run, sshArgs: () => ['-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'IdentitiesOnly=yes', '-o', 'IdentityAgent=none', '-o', 'UserKnownHostsFile=' + known, '-o', 'GlobalKnownHostsFile=/dev/null', '-p', String(sshPort), '-i', identity, 'fixture@127.0.0.1'] };
   const manager = new TunnelManager({ dataDir: path.join(directory, 'data'), service, startupTimeout: 7000 });
-  t.after(async () => { await manager.shutdown(); for (const socket of sockets) socket.destroy(); for (const client of clients) client.end(); for (const listener of remoteListeners) listener.close(); await new Promise(resolve => ssh.close(resolve)); await new Promise(resolve => echoServer.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
+  cleanupResources = async () => { await manager.shutdown(); for (const socket of sockets) socket.destroy(); for (const client of clients) client.end(); for (const listener of remoteListeners) listener.close(); await new Promise(resolve => ssh.close(resolve)); await new Promise(resolve => echoServer.close(resolve)); };
   return { manager, service, host, directory, targetPort, calls, remoteListeners, requestedTargets, websiteRequests };
 }
 

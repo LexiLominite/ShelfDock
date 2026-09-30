@@ -1,0 +1,188 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs/promises');
+const net = require('node:net');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execute = promisify(execFile);
+const { Server, utils } = require('ssh2');
+const { ClipboardSync } = require('../desktop/clipboard-sync.cjs');
+const { connectSsh, readOwnerBootstrap } = require('../desktop/clipboard-sync-ssh.cjs');
+
+const PORT = 47635;
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=';
+
+const storage = () => ({
+  isEncryptionAvailable: () => true,
+  getSelectedStorageBackend: () => 'gnome_libsecret',
+  encryptString: value => Buffer.from(`fixture:${value}`),
+  decryptString: value => {
+    const text = Buffer.isBuffer(value) ? value.toString() : String(value);
+    if (!text.startsWith('fixture:')) throw new Error('fixture secret is unavailable');
+    return text.slice('fixture:'.length);
+  },
+});
+
+const waitFor = (predicate, message, timeoutMs = 7000) => new Promise((resolve, reject) => {
+  const deadline = Date.now() + timeoutMs;
+  const check = () => {
+    if (predicate()) { resolve(); return; }
+    if (Date.now() >= deadline) { reject(new Error(message)); return; }
+    setTimeout(check, 15);
+  };
+  check();
+});
+
+const listen = server => new Promise((resolve, reject) => {
+  server.once('error', reject);
+  server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+});
+
+test('clipboard sync pairs and exchanges text and PNG both ways over an owned real OpenSSH tunnel', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'shelfdock-sync-ssh-'));
+  let cleanupResources = async () => {};
+  t.after(async () => { try { await cleanupResources(); } finally { await fs.rm(directory, { recursive: true, force: true }); } });
+  const remoteHome = path.join(directory, 'isolated-remote-home');
+  const remoteData = path.join(remoteHome, '.config', 'lex-drift');
+  const clientHome = path.join(directory, 'isolated-home');
+  await fs.mkdir(clientHome, { recursive: true, mode: 0o700 });
+  // Generate genuine OpenSSH keys once; ssh2's generator can truncate leading
+  // zero bytes in Ed25519 public keys and create malformed fixtures.
+  const makeKey = async name => {
+    const file = path.join(directory, name);
+    await execute('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'loopback-fixture', '-f', file], { timeout: 5000 });
+    const privateKey = await fs.readFile(file, 'utf8');
+    const publicKey = (await fs.readFile(file + '.pub', 'utf8')).trim();
+    assert.equal(utils.parseKey(privateKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 private key');
+    assert.equal(utils.parseKey(publicKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 public key');
+    return { private: privateKey, public: publicKey, file };
+  };
+  const hostKey = await makeKey('fixture-host-key');
+  const userKey = await makeKey('fixture-client-key');
+  const identityFile = userKey.file;
+
+  const clients = new Set();
+  const channels = new Set();
+  const forwardedSockets = new Set();
+  const children = new Set();
+  const received = { sender: [], receiver: [] };
+  const listener = new Server({ hostKeys: [hostKey.private] }, client => {
+    clients.add(client);
+    client.on('error', () => {});
+    client.once('close', () => clients.delete(client));
+    client.on('authentication', context => {
+      if (context.username !== 'fixture-user' || context.method !== 'publickey' || !context.key.data.equals(utils.parseKey(userKey.public).getPublicSSH())) return context.reject();
+      const parsed = utils.parseKey(userKey.public);
+      if (context.signature && parsed.verify(context.blob, context.signature, context.hashAlgo) !== true) return context.reject();
+      context.accept();
+    });
+    client.on('session', (accept) => {
+      const session = accept(); session.on('exec', (acceptExec, _reject, info) => {
+        assert.match(info.command, /^sh -c /);
+        const channel = acceptExec();
+        const child = spawn('/bin/sh', ['-c', info.command], { env: { PATH: process.env.PATH, HOME: remoteHome, XDG_CONFIG_HOME: path.join(remoteHome, '.config') }, stdio: ['ignore', 'pipe', 'pipe'] });
+        children.add(child); child.stdout.pipe(channel, { end: false }); child.stderr.pipe(channel.stderr, { end: false });
+        child.once('close', code => { children.delete(child); channel.exit(code || 0); channel.end(); });
+        channel.once('close', () => { if (child.exitCode === null) child.kill('SIGTERM'); });
+      });
+    });
+    client.on('ready', () => client.on('tcpip', (accept, reject, info) => {
+      if (info.destIP !== '127.0.0.1' || Number(info.destPort) !== PORT || !receiver?.port) return reject();
+      const channel = accept();
+      const destination = net.connect({ host: '127.0.0.1', port: receiver.port });
+      channels.add(channel);
+      forwardedSockets.add(destination);
+      channel.on('error', () => destination.destroy());
+      channel.once('close', () => { channels.delete(channel); destination.destroy(); });
+      destination.on('error', () => channel.destroy());
+      destination.once('close', () => forwardedSockets.delete(destination));
+      channel.pipe(destination);
+      destination.pipe(channel);
+    }));
+  });
+  const sshPort = await listen(listener);
+  const knownHosts = path.join(directory, 'known_hosts');
+  await fs.writeFile(knownHosts, `[127.0.0.1]:${sshPort} ${hostKey.public}\n`, { mode: 0o600 });
+
+  let sender;
+  let receiver;
+  cleanupResources = async () => {
+    await Promise.allSettled([sender?.shutdown(), receiver?.shutdown()]);
+    for (const child of children) { try { child.kill('SIGTERM'); } catch {} }
+    const closeDeadline = Date.now() + 2000;
+    while (children.size && Date.now() < closeDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    for (const child of children) { try { child.kill('SIGKILL'); } catch {} }
+    const killDeadline = Date.now() + 1000;
+    while (children.size && Date.now() < killDeadline) await new Promise(resolve => setTimeout(resolve, 20));
+    if (children.size) throw new Error('An owned OpenSSH test process did not stop after SIGKILL.');
+    for (const channel of channels) channel.destroy();
+    for (const socket of forwardedSockets) socket.destroy();
+    for (const client of clients) client.destroy();
+    await new Promise(resolve => listener.close(resolve));
+  };
+
+  const trustPinnedSpawn = (command, args, options) => {
+    const child = spawn(command, [
+      '-F', '/dev/null',
+      '-o', `UserKnownHostsFile=${knownHosts}`,
+      '-o', 'GlobalKnownHostsFile=/dev/null',
+      '-o', 'IdentityAgent=none',
+      '-o', 'ControlMaster=no',
+      '-o', 'ControlPath=none',
+      ...args,
+    ], { ...options, env: { ...process.env, HOME: clientHome } });
+    children.add(child);
+    child.once('close', () => children.delete(child));
+    return child;
+  };
+
+  sender = new ClipboardSync({
+    dataDir: path.join(directory, 'sender-data'), safeStorage: storage(), platform: process.platform, port: 0,
+    connect: peer => connectSsh(peer.sshTarget, trustPinnedSpawn),
+    readOwnerBootstrap: (target, options) => readOwnerBootstrap(target, { ...options, spawnProcess: trustPinnedSpawn }),
+    onItem: item => received.sender.push(item),
+  });
+  receiver = new ClipboardSync({
+    dataDir: remoteData, safeStorage: storage(), platform: process.platform, port: 0,
+    onItem: item => received.receiver.push(item),
+  });
+  await Promise.all([sender.ready, receiver.ready]);
+  await Promise.all([sender.setEnabled(true), receiver.setEnabled(true)]);
+  assert.equal(receiver.pairing, null);
+  await sender.pairOwnedWith({
+    hostLabel: 'Loopback receiver', localLabel: 'Loopback sender', direction: 'both',
+    sshTarget: { user: 'fixture-user', host: '127.0.0.1', port: sshPort, identityFile },
+  });
+
+  const sendAndWait = async (from, to, item) => {
+    const before = to.length;
+    await from.submitLocal({ eventId: crypto.randomUUID(), createdAt: Date.now(), ...item });
+    await waitFor(() => to.length === before + 1, `timed out waiting for ${item.kind} over OpenSSH`);
+    return to.at(-1);
+  };
+
+  const receiverText = await sendAndWait(sender, received.receiver, { kind: 'text', text: 'fixture sender text' });
+  assert.equal(receiverText.text, 'fixture sender text');
+  const receiverPng = await sendAndWait(sender, received.receiver, { kind: 'png', png: PNG_BASE64 });
+  assert.equal(receiverPng.kind, 'png');
+  assert.equal(receiverPng.png, PNG_BASE64);
+  const senderText = await sendAndWait(receiver, received.sender, { kind: 'text', text: 'fixture receiver text' });
+  assert.equal(senderText.text, 'fixture receiver text');
+  const senderPng = await sendAndWait(receiver, received.sender, { kind: 'png', png: PNG_BASE64 });
+  assert.equal(senderPng.kind, 'png');
+  assert.equal(senderPng.png, PNG_BASE64);
+
+  assert.ok(children.size > 0, 'the authenticated OpenSSH client remains owned while the sync socket is live');
+  const senderPeerId = sender.peers[0].id;
+  await sender.revoke(senderPeerId);
+  await waitFor(() => receiver.peers.length === 0, 'remote revocation did not close the paired tunnel');
+  await Promise.all([sender.setEnabled(false), receiver.setEnabled(false)]);
+  await waitFor(() => children.size === 0, 'owned OpenSSH process did not exit after disable', 3000);
+  assert.equal(sender.peers.length, 0);
+  assert.equal(receiver.peers.length, 0);
+});

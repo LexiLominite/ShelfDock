@@ -454,3 +454,94 @@ h1 { font-size: clamp(29px, 4.2vw, 39px); line-height: 1.07; font-weight: 540; l
 
 .settings-button { position: relative; }
 .settings-update-dot { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--canvas); }
+
+/* Mac graphite surfaces preserve contrast over both light and dark desktop
+   backdrops. AppKit supplies the native material; CSS adds quiet smoked layers. */
+html.platform-darwin, html:has(body.platform-darwin) { background: #1c1d24; color-scheme: dark; }
+body.platform-darwin {
+  --canvas: #1c1d24; --surface: #23252e; --surface-raised: #2b2d38; --surface-hover: #343744;
+  --ink: #f1f0f7; --muted: #babdce; --accent: #c6b6ff; --accent-hover: #ded2ff;
+  --primary: #6950ce; --primary-hover: #765bdd; --on-accent: #ffffff;
+  --line: rgba(191, 195, 219, .18); --line-strong: #64697e;
+  --accent-soft: #383044; --accent-ring: rgba(198, 182, 255, .24);
+  --success: #8bdbb0; --success-soft: #24382e;
+  --warning: #efc988; --warning-soft: #3c3327;
+  --danger: #ffa1ad; --danger-soft: #412b34;
+  --shadow-soft: rgba(0, 0, 0, .16); --shadow-floating: rgba(0, 0, 0, .42);
+  --backdrop: rgba(10, 11, 17, .50); --drop-overlay: #23252ef5;
+  --panel: var(--surface); --text-primary: var(--ink); --text-muted: var(--muted);
+  --bg-hover: var(--surface-hover); --bg-success-light: var(--success-soft); --border-success: var(--success);
+  --text-success: var(--success); --text-success-muted: var(--success);
+  --bg-error-light: var(--danger-soft); --border-error: var(--danger); --text-error: var(--danger);
+  background: var(--canvas); color: var(--ink); color-scheme: dark;
+}
+body.platform-darwin #root { background: var(--canvas); }
+body.platform-darwin .titlebar { height: 58px; min-height: 58px; padding-left: 82px; }
+body.platform-darwin .brand { font-size: 20px; gap: 8px; letter-spacing: -.7px; }
+body.platform-darwin h1 { font-size: clamp(24px, 3.4vw, 29px); letter-spacing: -.9px; }
+body.platform-darwin .drop-tray { border-radius: 14px; border-color: var(--line); }
+body.platform-darwin .drop-tray::before { border-color: var(--line); }
+/* All action fills have their own purple: lavender is reserved for links and
+   selection ink, so white labels never sit on a pale accent. */
+body.platform-darwin .primary-button,
+body.platform-darwin .floating-plus,
+body.platform-darwin .selected-check,
+body.platform-darwin .switch.on { background: var(--primary); border-color: var(--primary); color: var(--on-accent); }
+body.platform-darwin ::selection { background: var(--primary); color: var(--on-accent); }
+body.platform-darwin .primary-button:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+body.platform-darwin .quiet-button,
+body.platform-darwin .machines-toggle { box-shadow: none; }
+body.platform-darwin :is(input:not([type=checkbox]):not([type=radio]), textarea, select),
+body.platform-darwin :is(.machine-search, .clipboard-search, .text-editor) {
+  background: var(--surface-raised); color: var(--ink); border-color: var(--line-strong);
+}
+body.platform-darwin .machine-search input,
+body.platform-darwin .clipboard-search input { background: transparent; }
+body.platform-darwin :is(.modal, .machine-context-menu, .toast, .history-panel) {
+  background: var(--surface); border-color: var(--line); box-shadow: 0 10px 32px var(--shadow-floating);
+}
+body.platform-darwin .settings-update-dot { box-shadow: 0 0 0 2px var(--surface); }
+html.platform-darwin.liquid-glass,
+html:has(body.platform-darwin.liquid-glass),
+body.platform-darwin.liquid-glass,
+body.platform-darwin.liquid-glass #root { background: transparent; }
+body.platform-darwin.liquid-glass {
+  --canvas: transparent;
+  --surface: rgba(33, 35, 44, .76);
+  --surface-raised: rgba(43, 45, 56, .92);
+  --surface-hover: rgba(52, 55, 68, .94);
+  --accent-soft: rgba(56, 48, 68, .94);
+}
+body.platform-darwin.liquid-glass .app { background: rgba(20, 22, 29, .82); border-radius: 18px; box-shadow: none; }
+body.platform-darwin.liquid-glass :is(.titlebar, .app-footer) { background: transparent; }
+body.platform-darwin.liquid-glass :is(.drop-tray, .machine-target, .workspace-tabs, .clipboard-list, .clipboard-detail) {
+  backdrop-filter: blur(12px) saturate(1.05); -webkit-backdrop-filter: blur(12px) saturate(1.05);
+  box-shadow: none;
+}
+body.platform-darwin.liquid-glass :is(.modal, .machine-context-menu, .toast, .history-panel) {
+  background: rgba(27, 29, 37, .96);
+  backdrop-filter: blur(18px) saturate(1.05); -webkit-backdrop-filter: blur(18px) saturate(1.05);
+}
+body.platform-darwin.liquid-glass .shelf-undo { background: rgba(43, 45, 56, .96); }
+body.platform-darwin.liquid-glass .modal-backdrop { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+/* Reduced transparency also works after the renderer removes liquid-glass. */
+html.platform-darwin.reduced-transparency,
+html:has(body.platform-darwin.reduced-transparency),
+body.platform-darwin.reduced-transparency,
+body.platform-darwin.reduced-transparency #root { background: #1c1d24; }
+body.platform-darwin.reduced-transparency {
+  --canvas: #1c1d24; --surface: #23252e; --surface-raised: #2b2d38; --surface-hover: #343744; --accent-soft: #383044;
+}
+body.platform-darwin.reduced-transparency :is(.app, .titlebar, .app-footer) { background: var(--canvas); }
+body.platform-darwin.reduced-transparency :is(.modal, .machine-context-menu, .toast, .history-panel) { background: var(--surface); }
+body.platform-darwin.reduced-transparency .shelf-undo { background: var(--surface-raised); }
+body.platform-darwin.reduced-transparency *, body.platform-darwin.reduced-transparency *::before,
+body.platform-darwin.reduced-transparency *::after { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+@media (prefers-reduced-transparency: reduce) {
+  html.platform-darwin, html:has(body.platform-darwin), body.platform-darwin, body.platform-darwin #root { background: #1c1d24; }
+  body.platform-darwin { --canvas: #1c1d24; --surface: #23252e; --surface-raised: #2b2d38; --surface-hover: #343744; --accent-soft: #383044; }
+  body.platform-darwin :is(.app, .titlebar, .app-footer) { background: var(--canvas); }
+  body.platform-darwin :is(.modal, .machine-context-menu, .toast, .history-panel) { background: var(--surface); }
+  body.platform-darwin .shelf-undo { background: var(--surface-raised); }
+  body.platform-darwin *, body.platform-darwin *::before, body.platform-darwin *::after { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+}

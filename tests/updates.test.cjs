@@ -41,7 +41,10 @@ async function fixture(t, options = {}) {
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const transport = fixtureStream();
   const manager = new UpdateManager({ dataDir: directory, version: '0.5.0', platform: 'linux', arch: 'x64', identify: async () => ({ available: false, reason: 'Fixture has no installed application.' }), stream: transport.stream, ...options });
-  await manager.initialized; t.after(() => manager.shutdown()); return { manager, directory, ...transport };
+  await manager.initialized;
+  // Keep tests that initiate checks in control of downloads. Fresh-install defaults are covered separately.
+  if (manager.enabled && manager.preferencesValid) await manager.updatePreferences({ autoCheck: false, autoDownload: false });
+  t.after(() => manager.shutdown()); return { manager, directory, ...transport };
 }
 test('semantic versions compare numeric releases, prereleases, and build metadata accurately', () => {
   assert.equal(compareVersions('0.10.0', '0.9.99'), 1);
@@ -96,14 +99,42 @@ test('metadata response is bounded even without Content-Length', async () => {
   const stream = async () => { const value = Readable.from([Buffer.alloc(20), Buffer.alloc(20)]); value.headers = {}; return value; };
   await assert.rejects(fetchBuffer(API_URL, { stream, limit: 30 }), /too large/);
 });
-test('update checks and downloads default off and persist only explicit choices', async t => {
-  const { manager, directory, calls } = await fixture(t); await manager.start(); assert.equal(calls.length, 0);
-  assert.deepEqual(manager.snapshot().preferences, { autoCheck: false, autoDownload: false, includePrereleases: true });
+test('fresh update preferences enable quiet checks and downloads, and saved choices survive restart', async t => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'shelfdock-updates-defaults-')));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const first = new UpdateManager({ dataDir: directory, version: '0.5.0', enabled: false }); await first.initialized;
+  assert.deepEqual(first.snapshot().preferences, { autoCheck: true, autoDownload: true, includePrereleases: true }); await first.shutdown();
+  const manager = new UpdateManager({ dataDir: directory, version: '0.5.0', stream: async () => { throw new Error('unexpected network'); } }); await manager.initialized; t.after(() => manager.shutdown());
+  assert.deepEqual(manager.snapshot().preferences, { autoCheck: true, autoDownload: true, includePrereleases: true });
   await manager.updatePreferences({ autoCheck: true, autoDownload: true, includePrereleases: false });
   const saved = JSON.parse(await fs.readFile(path.join(directory, 'updates/public/preferences.json'), 'utf8'));
   assert.equal(saved.autoCheck, true); assert.equal(saved.autoDownload, true);
+  const restarted = new UpdateManager({ dataDir: directory, version: '0.5.0', stream: async () => { throw new Error('unexpected network'); } }); await restarted.initialized;
+  assert.deepEqual(restarted.snapshot().preferences, { autoCheck: true, autoDownload: true, includePrereleases: false }); await restarted.shutdown();
   await manager.updatePreferences({ autoCheck: false }); assert.equal(manager.snapshot().preferences.autoDownload, false);
   await assert.rejects(manager.updatePreferences({ arbitrary: true }), /Invalid/);
+});
+test('malformed saved preferences fail closed until the user saves valid settings', async t => {
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'shelfdock-updates-invalid-prefs-')));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const folder = path.join(directory, 'updates/public'); await fs.mkdir(folder, { recursive: true });
+  await fs.writeFile(path.join(folder, 'preferences.json'), JSON.stringify({ version: 1, repository: 'LexiLominite/ShelfDock', autoCheck: true, autoDownload: 'yes', includePrereleases: true }));
+  const manager = new UpdateManager({ dataDir: directory, version: '0.5.0', stream: async () => { throw new Error('network must not be used'); } }); await manager.initialized; t.after(() => manager.shutdown());
+  assert.deepEqual(manager.snapshot().preferences, { autoCheck: false, autoDownload: false, includePrereleases: true });
+  assert.match(manager.snapshot().preferenceWarning, /could not be validated/);
+  await assert.rejects(manager.check(), /could not be validated/);
+  await manager.updatePreferences({ autoCheck: false });
+  assert.equal(manager.snapshot().preferenceWarning, ''); assert.equal(manager.preferencesValid, true);
+});
+test('repository-mismatched saved preferences turn off automatic work without copying edition choices', async t => {
+  const { directory } = await fixture(t); const folder = path.join(directory, 'updates/personal');
+  await fs.mkdir(folder, { recursive: true });
+  await fs.writeFile(path.join(folder, 'preferences.json'), JSON.stringify({ version: 1, repository: 'LexiLominite/ShelfDock', autoCheck: true, autoDownload: true, includePrereleases: false }));
+  let requests = 0;
+  const manager = new UpdateManager({ dataDir: directory, version: '0.5.0', personal: true, stream: async () => { requests++; } });
+  await manager.initialized; t.after(() => manager.shutdown()); await manager.start();
+  assert.equal(manager.snapshot().preferences.autoCheck, false); assert.equal(manager.snapshot().preferences.autoDownload, false);
+  assert.equal(manager.timer, null); await assert.rejects(manager.check(), /could not be validated/); assert.equal(requests, 0);
 });
 test('discovery, verified download, restart restoration and file reveal complete end to end', async t => {
   let revealed;
@@ -207,17 +238,18 @@ test('installation discovery rejects custom executable paths, personal builds an
   await fs.symlink(app, path.join(directory, 'Linked')); assert.equal((await identifyInstallation({ isPackaged: true, platform: 'linux', execPath: path.join(directory, 'Linked/ShelfDock') })).available, false);
 });
 const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-async function helperFixture(t, { invalidExecutable = false, waiting = false } = {}) {
-  const { directory } = await fixture(t), target = path.join(directory, 'App with spaces'), staged = path.join(directory, 'Stage'), backup = path.join(directory, 'Backup'), result = path.join(directory, 'result.json'), ready = path.join(directory, 'ready'), launched = path.join(directory, 'launched'), oldLaunched = path.join(directory, 'old-launched');
-  await fs.mkdir(target); await fs.mkdir(staged); await fs.writeFile(path.join(target, 'ShelfDock'), `#!/bin/sh\nprintf old > ${quote(oldLaunched)}\n`, { mode: 0o755 });
-  if (!invalidExecutable) await fs.writeFile(path.join(staged, 'ShelfDock'), `#!/bin/sh\nprintf new > ${quote(launched)}\n`, { mode: 0o755 });
+async function helperFixture(t, { invalidExecutable = false, waiting = false, healthFailure = null, oldLaunchDelay = 0 } = {}) {
+  const { directory } = await fixture(t), target = path.join(directory, 'App with spaces'), staged = path.join(directory, 'Stage'), backup = path.join(directory, 'Backup'), result = path.join(directory, 'result.json'), ready = path.join(directory, 'ready'), started = path.join(directory, 'started'), launched = path.join(directory, 'launched'), oldLaunched = path.join(directory, 'old-launched');
+  await fs.mkdir(target); await fs.mkdir(staged); await fs.writeFile(path.join(target, 'ShelfDock'), `#!/bin/sh\n${oldLaunchDelay ? "sleep " + oldLaunchDelay + "\n" : ""}printf old > ${quote(oldLaunched)}\n`, { mode: 0o755 });
+  if (!invalidExecutable) await fs.writeFile(path.join(staged, 'ShelfDock'), `#!/bin/sh\nprintf new > ${quote(launched)}\n${healthFailure === 'early-exit' ? 'exit 1' : healthFailure === 'timeout' ? 'sleep 10' : 'printf started > ' + quote(started)}\n`, { mode: 0o755 });
   const stat = await fs.stat(target), script = path.join(directory, 'apply.sh');
   // Use the local host's stat implementation while exercising the Linux launch branch on macOS.
   const helperText = process.platform === 'darwin' ? POSIX_HELPER.replace("stat -c '%d:%i'", "/usr/bin/stat -f '%d:%i'") : POSIX_HELPER;
-  await fs.writeFile(script, helperText);
+  // Accelerate only the fixture's health loop; production remains 300 x 200ms.
+  await fs.writeFile(script, healthFailure === 'timeout' ? helperText.replace('[ "$count" -ge 300 ]', '[ "$count" -ge 4 ]') : helperText);
   const parent = waiting ? spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { stdio: 'ignore' }) : null;
   if (parent) t.after(() => parent.kill());
-  const child = spawn('/bin/sh', [script, String(parent?.pid || 99999999), target, staged, backup, result, ready, 'linux', `${stat.dev}:${stat.ino}`, 'ShelfDock'], { stdio: 'ignore' });
+  const child = spawn('/bin/sh', [script, String(parent?.pid || 99999999), target, staged, backup, result, ready, 'linux', `${stat.dev}:${stat.ino}`, 'ShelfDock', started], { stdio: 'ignore' });
   t.after(() => child.kill()); const done = new Promise(resolve => child.once('exit', code => resolve(code)));
   return { directory, target, staged, backup, result, ready, launched, oldLaunched, parent, child, done };
 }
@@ -234,6 +266,23 @@ test('portable apply helper waits for its exact parent, backs up and atomically 
 test('portable apply helper rolls back an unlaunchable staged app without removing the old one', async t => {
   const value = await helperFixture(t, { invalidExecutable: true }); assert.equal(await value.done, 1);
   assert.equal(JSON.parse(await fs.readFile(value.result, 'utf8')).status, 'rolled_back'); assert.match(await fs.readFile(path.join(value.target, 'ShelfDock'), 'utf8'), /old-launched/);
+});
+for (const healthFailure of ['early-exit', 'timeout']) test(`portable apply helper restores the old app on startup ${healthFailure}`, async t => {
+  // The restored application relaunches asynchronously after the rollback receipt.
+  // A delayed fixture proves helper exit is not itself an old-app health signal.
+  const value = await helperFixture(t, { healthFailure, oldLaunchDelay: healthFailure === 'timeout' ? 1.2 : 0 });
+  assert.equal(await value.done, 1);
+  assert.equal(JSON.parse(await fs.readFile(value.result, 'utf8')).status, 'rolled_back');
+  assert.match(await fs.readFile(path.join(value.target, 'ShelfDock'), 'utf8'), /old-launched/);
+  assert.match(await fs.readFile(path.join(value.staged, 'ShelfDock'), 'utf8'), /printf new/);
+  const relaunchDeadline = Date.now() + 10000;
+  let oldLaunch;
+  while (Date.now() < relaunchDeadline) {
+    try { oldLaunch = await fs.readFile(value.oldLaunched, 'utf8'); if (oldLaunch === 'old') break; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(oldLaunch, 'old', `restored app did not confirm relaunch within 10 seconds after ${healthFailure} rollback`);
 });
 for (const action of ['revealDownload', 'install']) for (const damage of ['changed', 'missing']) {
   test(`${action} invalidates a ${damage} package and permits only a verified retry`, async t => {
@@ -294,10 +343,13 @@ test('cache invalidation and retry do not follow a replaced cache directory', as
   assert.deepEqual(await fs.readFile(path.join(outside, name)), data); assert.equal(await fs.readFile(path.join(outside, 'download.json'), 'utf8'), 'retained record');
   assert.deepEqual(await fs.readFile(path.join(previous, name)), data); await fs.access(path.join(previous, 'download.json'));
 });
-test('Windows helper uses literal paths, old/new hashes, process wait and rollback without changing execution policy', () => {
+test('Windows helper uses literal paths, old/new hashes, process wait, 60-second health check and backup restoration', () => {
   assert.match(WINDOWS_HELPER, /Get-FileHash -LiteralPath \$p.target/); assert.match(WINDOWS_HELPER, /Get-FileHash -LiteralPath \$p.staged/);
-  assert.match(WINDOWS_HELPER, /Get-Process -Id \$p.pid/); assert.match(WINDOWS_HELPER, /Result 'rolled_back'/);
+  assert.match(WINDOWS_HELPER, /Get-Process -Id \$p.pid/); assert.match(WINDOWS_HELPER, /AddSeconds\(60\)/); assert.match(WINDOWS_HELPER, /RestoreBackup/); assert.match(WINDOWS_HELPER, /Result 'rolled_back'/);
   assert.doesNotMatch(WINDOWS_HELPER, /ExecutionPolicy|Invoke-Expression|EncodedCommand/);
+});
+test('POSIX helper restores the old app when replacement startup fails and bounds health confirmation to 60 seconds', () => {
+  assert.match(POSIX_HELPER, /restore_backup\(\)/); assert.match(POSIX_HELPER, /-ge 300/);
 });
 test('hashFile matches SHA256 without loading the whole package into a buffer', async t => {
   const { directory } = await fixture(t); const file = path.join(directory, 'package'); await fs.writeFile(file, data); assert.equal(await hashFile(file), digest(data));
@@ -316,7 +368,7 @@ test('a broken updater cache cannot prevent the rest of the app starting', async
 test('automatic update consent is scoped to the edition repository', async t => {
   const { manager, directory } = await fixture(t); await manager.updatePreferences({ autoCheck: true, autoDownload: true });
   const personal = new UpdateManager({ dataDir: directory, version: '0.5.0', personal: true, identify: async () => ({ available: false }) }); await personal.initialized;
-  assert.equal(personal.snapshot().preferences.autoCheck, false); assert.equal(personal.snapshot().preferences.autoDownload, false); await personal.shutdown();
+  assert.equal(personal.snapshot().preferences.autoCheck, true); assert.equal(personal.snapshot().preferences.autoDownload, true); await personal.shutdown();
 });
 test('chained archive symlinks cannot escape even when each individual target normalizes inside', async t => {
   const { directory } = await fixture(t); const archive = path.join(directory, 'links.zip');
@@ -371,7 +423,7 @@ test('rejected async quit cancels the helper and leaves the current portable app
 test('manager download, stage, helper handshake, backup, replacement and quiet relaunch complete on an isolated fixture', async t => {
   const { directory } = await fixture(t); const target = path.join(directory, 'ShelfDock'), archiveRoot = 'ShelfDock-0.6.0-linux-x64', packageFolder = path.join(directory, archiveRoot), marker = path.join(directory, 'new-version-started');
   for (const folder of [target, packageFolder]) { await fs.mkdir(path.join(folder, 'resources'), { recursive: true }); await fs.writeFile(path.join(folder, 'resources/app.asar'), 'fixture asar'); }
-  await fs.writeFile(path.join(target, 'ShelfDock'), '#!/bin/sh\nexit 0\n', { mode: 0o755 }); await fs.writeFile(path.join(packageFolder, 'ShelfDock'), `#!/bin/sh\nprintf launched > ${quote(marker)}\n`, { mode: 0o755 });
+  await fs.writeFile(path.join(target, 'ShelfDock'), '#!/bin/sh\nexit 0\n', { mode: 0o755 }); await fs.writeFile(path.join(packageFolder, 'ShelfDock'), `#!/bin/sh\nprintf launched > ${quote(marker)}\nsleep 10\n`, { mode: 0o755 });
   const archive = path.join(directory, 'package.tar.gz'); await execFile('tar', ['-czf', archive, '-C', directory, archiveRoot], { env: { ...process.env, COPYFILE_DISABLE: '1' } });
   const payload = await fs.readFile(archive), candidate = release(); candidate.assets[0].size = payload.length; candidate.assets[0].digest = 'sha256:' + digest(payload); const manifest = `${digest(payload)}  ${candidate.assets[0].name}\n`; candidate.assets[1].digest = 'sha256:' + digest(manifest);
   const stream = async url => { const bytes = url === API_URL ? JSON.stringify([candidate]) : url.endsWith('SHA256SUMS.txt') ? manifest : payload; const readable = Readable.from([Buffer.from(bytes)]); readable.headers = {}; return readable; };
@@ -384,7 +436,7 @@ test('manager download, stage, helper handshake, backup, replacement and quiet r
   await manager.initialized; t.after(() => manager.shutdown()); await manager.check(); await manager.download(); const result = await manager.install(); assert.equal(quitFinished, true); assert.equal(result.status, 'installing');
   for (let i = 0; i < 500; i++) { try { await fs.access(marker); break; } catch { await new Promise(resolve => setTimeout(resolve, 20)); } }
   assert.equal(await fs.readFile(marker, 'utf8'), 'launched'); const plan = JSON.parse(await fs.readFile(path.join(directory, 'updates/public/install.json'), 'utf8')); assert.equal(await fs.readFile(path.join(plan.backup, 'ShelfDock'), 'utf8'), '#!/bin/sh\nexit 0\n');
-  const restarted = new UpdateManager({ dataDir: directory, version: '0.6.0', platform: 'linux', arch: 'x64', isPackaged: true, execPath: path.join(target, 'ShelfDock'), stream }); await restarted.initialized; assert.equal(restarted.snapshot().result.status, 'installed'); await restarted.shutdown();
+  const restarted = new UpdateManager({ dataDir: directory, version: '0.6.0', platform: 'linux', arch: 'x64', isPackaged: true, execPath: path.join(target, 'ShelfDock'), stream }); await restarted.initialized; assert.equal(restarted.snapshot().result.status, 'starting'); await fs.access(path.join(restarted.directory, 'install.json')); await restarted.confirmStartup(); assert.equal(restarted.snapshot().result.status, 'installed'); await assert.rejects(fs.access(path.join(restarted.directory, 'install.json')), { code: 'ENOENT' }); await restarted.shutdown();
 });
 async function installRecordFixture(t, { runningVersion = '0.6.0', helperStatus = 'installed', keepBackup = true } = {}) {
   const { directory, manager } = await fixture(t), id = crypto.randomUUID();

@@ -43,7 +43,7 @@ async function controller(options = {}) {
     setMinimumSize() {}
     setPosition(x, y) { this.bounds.x = x; this.bounds.y = y; }
     setVisibleOnAllWorkspaces() {}
-    async loadFile(file) { this.loadedFile = file; }
+    async loadFile(file) { this.loadedFile = file; record('windowLoaded', file); }
   }
   class FakeTray extends EventEmitter {
     constructor() { super(); trays.push(this); }
@@ -73,7 +73,7 @@ async function controller(options = {}) {
     shell: { openPath: () => { throw new Error('No profile access is permitted in controller tests.'); }, openExternal: async url => { record('openExternal', url); if (options.openExternalError) throw new Error(options.openExternalError); } },
     clipboard: { writeText: value => record('clipboardWrite', value), read: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
   };
-  const initialState = { hosts: options.activeTunnels?.length ? [{ ...siteHost }] : [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
+  const initialState = { hosts: options.hosts || (options.activeTunnels?.length ? [{ ...siteHost }] : []), items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
   let fakeService;
   class FakeService {
     constructor() { record('serviceCreated'); this.state = initialState; fakeService = this; }
@@ -81,7 +81,7 @@ async function controller(options = {}) {
     async refreshHosts() { return this.state; }
     async probeHosts() { return this.state; }
   }
-  let workerOptions, historyOptions, fakeTunnels;
+  let workerOptions, historyOptions, fakeTunnels, fakeDesktop, fakeInstaller;
   const modules = {
     '../package.json': { productName: options.productName || 'ShelfDock', version: '0.4.1' },
     electron,
@@ -90,16 +90,48 @@ async function controller(options = {}) {
     'node:fs/promises': new Proxy({}, { get: () => () => { throw new Error('No filesystem operations are permitted in controller tests.'); } }),
     './service.cjs': { DriftService: FakeService },
     './shake.cjs': shakeModule.exports,
+    './native-glass.cjs': { applyNativeGlass: () => { record('nativeGlassApplied'); return options.glassStatus || { mode: 'native', applied: true, supported: true, reducedTransparency: false }; }, watchAccessibility: callback => { record('appearanceWatch'); return () => record('appearanceWatchStopped'); } },
     './clipboard.cjs': { captureClipboard: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
     './config.cjs': { createConfig: () => ({}), importConfiguration: async () => initialState },
     './migrate.cjs': { migrateLegacyData: async () => undefined },
     './tunnels.cjs': { TunnelManager: class { constructor() { fakeTunnels = this; this.state = { active: options.activeTunnels || [], history: [] }; this.initialized = Promise.resolve(); } get active() { return new Map(this.state.active.map(view => [view.id, { view: { ...view, hostId: siteHost.id }, endpoint: endpointKey(siteHost) }])); } snapshot() { return this.state; } async getState() { return this.state; } async stop(id) { record('tunnelStop', id); this.state.active = this.state.active.filter(tunnel => tunnel.id !== id); } async shutdown() { record('tunnelsShutdown'); } } },
     './mac-installer.cjs': { MacInstaller: class { constructor(args) { this.args = args; record('macInstallerCreated', args.platform, args.sourceApp); } getState() { return { available: this.args.platform === 'darwin' && this.args.isPackaged, operation: null }; } async preview(request) { record('macPreview', request); return { id: 'fictional-plan' }; } async install(request) { record('macInstall', request); return this.getState(); } async shutdown() { record('macInstallerShutdown'); await options.installerShutdown; } } },
+    './remote-desktop.cjs': { RemoteDesktop: class { constructor(args) { this.args = args; this.session = options.remoteSession || null; fakeDesktop = this; record('desktopCreated', args.allowedOrigins); } getState() { return { session: this.session }; } async inspect(request) { record('desktopInspect', request); await options.desktopInspection; return { available: true }; } async previewSetup(request) { record('desktopPreview', request); return { id: 'desktop-plan' }; } async apply(request) { record('desktopApply', request); return this.getState(); } async start(request) { record('desktopStart', request); this.session = { id: 'desktop-session', status: 'waiting' }; return { session: this.session }; } async stop(request) { record('desktopStop', request); this.session = null; return this.getState(); } async shutdown() { record('desktopShutdown'); await options.desktopShutdown; } } },
+    './remote-installer.cjs': { RemoteInstaller: class { constructor(args) { this.args = args; fakeInstaller = this; record('remoteInstallerCreated', args.edition); } getState() { return { available: true, operation: null }; } async preview(request) { record('remotePreview', request); return { id: 'remote-plan' }; } async install(request) { record('remoteInstall', request); return this.getState(); } async cancel(request) { record('remoteCancel', request); return this.getState(); } async shutdown() { record('remoteInstallerShutdown'); await options.remoteInstallerShutdown; } } },
     './received.cjs': { ReceivedManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('receivedCreated', args.enabled); } async getState() { return { received: [], unreadCount: 0 }; } async refresh() { record('receivedRefresh'); return this.getState(); } async markRead(value) { record('receivedRead', value); return this.getState(); } async openFolder(value) { record('receivedOpen', value); return this.getState(); } async addToShelf(value) { record('receivedShelf', value); return initialState; } start() { record('receivedStart'); } stop() { record('receivedStop'); } } },
-    './updates.cjs': { UpdateManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('updatesCreated', args.enabled); } snapshot() { return { status: 'idle', version: '0.5.0' }; } async getState() { return this.snapshot(); } async check() { record('updatesCheck'); return this.getState(); } async install() { if (this.args.isBusy()) throw new Error('Finish active work first.'); this.args.onChange({status:'installing'}); record('updatesInstall'); } start() { record('updatesStart'); } shutdown() { record('updatesShutdown'); } } },
+    './updates.cjs': { UpdateManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('updatesCreated', args.enabled); } snapshot() { return { status: 'idle', version: '0.5.0' }; } async getState() { return this.snapshot(); } async check() { record('updatesCheck'); return this.getState(); } async install() { if (this.args.isBusy()) throw new Error('Finish active work first.'); this.args.onChange({status:'installing'}); record('updatesInstall'); } async confirmStartup() { record('startupConfirmed'); } start() { record('updatesStart'); } shutdown() { record('updatesShutdown'); } } },
     './tunnel-site.cjs': { ...require('../desktop/tunnel-site.cjs'), verifyTunnelSite: async (url, recordValue) => { record('verifyTunnelSite', url); if (options.siteProbe) await options.siteProbe(url, recordValue); if (options.siteProbeError) throw new Error(options.siteProbeError); } },
-    './clipboard-history.cjs': { ClipboardHistory: class {
+    './clipboard-delivery.cjs': require('../desktop/clipboard-delivery.cjs'),
+    './clipboard-continuity.cjs': { ClipboardContinuity: class {
+      constructor(args) { this.args = args; record('continuityCreated', args); }
+      state() { return { running: false, devices: [] }; }
+      async start() { record('continuityStart'); }
+      stop() { record('continuityStop'); }
+      async shutdown() { record('continuityShutdown'); }
+    } },
+    './clipboard-sync.cjs': { ClipboardSync: class {
+      constructor() { record('clipboardSyncCreated'); this.ready = Promise.resolve(); this.settings = { available: false, enabled: options.clipboardSyncEnabled === true, paused: false, continuity: false, receiveMode: 'history', pairing: null, peers: [] }; }
+      state() { return { ...this.settings }; }
+      async setEnabled(enabled) { record('clipboardSyncEnabled', enabled); if (options.clipboardSyncStartError && (enabled || options.clipboardSyncDisableError)) throw new Error('Synthetic private startup detail'); this.settings.enabled = enabled; }
+      noteError(message) { this.settings.error = message; record('clipboardSyncWarning', message); }
+      cancelAutomaticOwnerRequests() { record('automaticClipboardCancelled'); }
+      async setPaused(paused) { this.settings.paused = paused; record('clipboardSyncPaused', paused); }
+      async setReceiveMode(mode) { this.settings.receiveMode = mode; }
+      async setContinuity(value) { record('continuityOptIn', value); this.settings.continuity = value; if (value) Object.assign(this.settings, { enabled: true, paused: false, receiveMode: 'clipboard' }); }
+      async restoreExcludedPeer(id) { record('clipboardPeerRestored', id); }
+      async refreshOwnerBootstrap() { record('ownerBootstrapRefreshed'); }
+      async beginPairing() { return { code: 'ABCDEFGH', expiresAt: new Date().toISOString() }; }
+      async pairWith() { return this.state(); }
+      async pairOwnedWith(request) { record('ownerClipboardConnected', request); await options.clipboardLink; return this.state(); }
+      async updatePeer() {}
+      async revoke() { return this.state(); }
+      async submitLocal() {}
+      async shutdown() { record('clipboardSyncShutdown'); }
+    } },
+    './clipboard-sync-ssh.cjs': { connectSsh() { throw new Error('No SSH in controller tests.'); }, buildSshArgs() { return []; } },
+    './clipboard-history.cjs': { SYNC_EVENT_TYPE: 'application/x-shelfdock-sync-event', ClipboardHistory: class {
       constructor(args) { historyOptions = args; this.initialized = Promise.resolve(); this.tools = { enabled: options.clipboardToolsEnabled === true, showTab: true, historyEnabled: false }; }
+      resetSyncBaseline() { record('clipboardBaselineReset'); }
       toolsState() { return { ...this.tools }; }
       requireTools() { if (!this.tools.enabled) throw new Error('Enable Clipboard tools in Settings first.'); }
       async updateTools(patch) { Object.assign(this.tools, patch); if (!this.tools.enabled) this.tools.historyEnabled = false; record('clipboardToolsUpdated', patch); }
@@ -141,7 +173,7 @@ async function controller(options = {}) {
     assert.ok(poll, 'normal operation installs cursor sampling');
     for (const x of [0, 50, 130, 50, 0, 60, 140, 60, 0, 60, 150]) { clock += 32; cursor = { x: 300 + x, y: 200 }; poll.callback(); }
   };
-  return { app, calls, windows, trays, timers, shortcuts, handlers, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, tunnels: fakeTunnels, advance: milliseconds => { clock += milliseconds; } };
+  return { app, calls, windows, trays, timers, shortcuts, handlers, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, tunnels: fakeTunnels, desktop: fakeDesktop, installer: fakeInstaller, advance: milliseconds => { clock += milliseconds; } };
 }
 
 test('actual controller shows on a shake and hides on a later shake while respecting cooldown', async () => {
@@ -455,4 +487,179 @@ test('packaged public edition does not read or apply a personal preset', async (
   const c = await controller({ packaged: true, productName: 'ShelfDock', argv: ['--background'] });
   assert.equal(c.errors.length, 0, 'public startup never touches guarded preset filesystem');
   assert.equal(c.windows.length, 1);
+});
+
+
+test('startup confirmation follows loaded renderer and packaged editions keep installer feeds separate', async () => {
+  const clean = await controller({ packaged: true, productName: 'ShelfDock' });
+  assert.equal(clean.installer.args.edition, 'clean');
+  assert.deepEqual(Array.from(clean.desktop.args.allowedOrigins), ['null']);
+  assert.equal(clean.calls.some(call => call.type === 'startupConfirmed'), false, 'Native window load alone is not renderer health');
+  await clean.invoke('confirmRendererReady');
+  assert.ok(clean.calls.findIndex(call => call.type === 'startupConfirmed') > clean.calls.findIndex(call => call.type === 'windowLoaded'));
+  const privateApp = await controller({ productName: 'LexBridge' });
+  assert.equal(privateApp.installer.args.edition, 'personal');
+  const silent = await controller({ env: { LEX_DRIFT_BACKGROUND_TEST: '1' } });
+  assert.equal(silent.calls.some(call => call.type === 'startupConfirmed'), false);
+});
+
+test('remote setup preserves status and stop paths but blocks configuration, transfers and updates', async () => {
+  const c = await controller();
+  for (const flag of ['remoteInstallation', 'remoteDesktopSetup']) {
+    c.service[flag] = true;
+    for (const method of ['saveHost', 'send', 'installUpdate', 'captureClipboard', 'refreshHosts']) await assert.rejects(c.invoke(method, {}), /remote.*finish/);
+    await c.invoke('getState'); await c.invoke('getRemoteInstallState'); await c.invoke('getRemoteDesktopState');
+    await c.invoke('cancelRemoteInstall', {}); await c.invoke('stopRemoteDesktop', {}); await c.invoke('setInteraction', { editing: false });
+    c.service[flag] = false;
+  }
+  c.desktop.session = { id: 'desktop-live', status: 'connected' };
+  await assert.rejects(c.invoke('installUpdate'), /Finish active work/);
+  await c.invoke('stopRemoteDesktop', { id: 'desktop-live' });
+  await c.invoke('installUpdate');
+});
+
+test('desktop inspection holds the configuration guard until it settles and native requests reject foreign windows', async () => {
+  let resolveInspection;
+  const c = await controller({ desktopInspection: new Promise(resolve => { resolveInspection = resolve; }) });
+  const work = c.invoke('inspectRemoteDesktop', { hostId: 'fixture' });
+  await flush();
+  assert.equal(c.service.remoteDesktopSetup, true);
+  await assert.rejects(c.invoke('saveHost', {}), /remote desktop setup/);
+  resolveInspection(); await work;
+  assert.equal(c.service.remoteDesktopSetup, false);
+  for (const method of ['inspectRemoteDesktop', 'previewRemoteInstall', 'installRemotely', 'cancelRemoteInstall', 'confirmRendererReady']) await assert.rejects(c.handlers.get('drift:' + method)({ sender: {}, senderFrame: { url: 'file:///elsewhere' } }, {}), /did not come from/);
+});
+
+test('own-device clipboard connection uses the saved SSH route without a pairing code and validates direction', async () => {
+  const host = {...siteHost, sshAlias:'fixture-alias', identityFile:'/virtual/owned-key'};
+  const c = await controller({hosts:[host],clipboardToolsEnabled:true});
+  assert.equal(c.handlers.has('drift:beginClipboardPairing'),false);
+  assert.equal(c.handlers.has('drift:pairClipboardSync'),false);
+  await c.invoke('pairOwnedClipboardSync',{hostId:host.id,direction:'receive'});
+  const request=c.calls.find(call=>call.type==='ownerClipboardConnected').values[0];
+  assert.equal(request.hostLabel,host.name);assert.equal(request.direction,'receive');
+  assert.equal(request.sshTarget.alias,'fixture-alias');assert.equal(request.sshTarget.identityFile,'/virtual/owned-key');
+  assert.equal('code' in request,false);assert.equal(c.service.clipboardLinking,false);
+  await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:host.id,direction:'bad'}),/Choose send, receive, or both/);
+  await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:'absent'}),/Choose a saved machine/);
+  const off = await controller({hosts:[host]});
+  await assert.rejects(off.invoke('pairOwnedClipboardSync',{hostId:host.id}),/Enable Clipboard tools/);
+  assert.equal(off.calls.some(call=>call.type==='ownerClipboardConnected'),false);
+});
+
+test('a pending own-device link blocks conflicting edits and update restart while allowing pause and disable', async () => {
+  let finish;const pending=new Promise(resolve=>{finish=resolve;});
+  const c=await controller({hosts:[siteHost],clipboardToolsEnabled:true,clipboardLink:pending});
+  const link=c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id});await flush();
+  assert.equal(c.service.clipboardLinking,true);
+  await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id}),/device connection to finish/);
+  await assert.rejects(c.invoke('saveHost',siteHost),/device connection to finish/);
+  await assert.rejects(c.invoke('installUpdate'),/device connection to finish/);
+  await c.invoke('updateClipboardSync',{paused:true});await c.invoke('updateClipboardTools',{enabled:false});
+  finish();await link;assert.equal(c.service.clipboardLinking,false);
+  assert.ok(c.calls.some(call=>call.type==='ownerBootstrapRefreshed'));
+});
+
+test('native Mac appearance is published with solid accessibility fallback and skipped on other platforms', async () => {
+  const mac=await controller({argv:['--background']});
+  const state=await mac.invoke('getState');assert.equal(state.environment.nativeGlass.mode,'native');
+  assert.equal(mac.windows[0].options.transparent,true);assert.equal(mac.windows[0].isVisible(),false);
+  assert.ok(mac.calls.some(call=>call.type==='nativeGlassApplied'));
+  const solid=await controller({glassStatus:{mode:'solid',applied:false,supported:true,reducedTransparency:true}});
+  assert.equal((await solid.invoke('getState')).environment.nativeGlass.mode,'solid');
+  const linux=await controller({platform:'linux'});assert.equal(linux.calls.some(call=>call.type==='nativeGlassApplied'),false);
+  mac.app.emit('before-quit',{preventDefault(){}});assert.ok(mac.calls.some(call=>call.type==='appearanceWatchStopped'));
+});
+
+test('own-device connection acquires its lock before asynchronous host lookup', async () => {
+ const c=await controller({hosts:[siteHost],clipboardToolsEnabled:true});
+ const original=c.service.getState.bind(c.service);let lookup;
+ c.service.getState=()=>new Promise(resolve=>{lookup=resolve;});
+ const first=c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id});
+ assert.equal(c.service.clipboardLinking,true);
+ await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id}),/device connection to finish/);
+ await assert.rejects(c.invoke('removeHost',siteHost.id),/device connection to finish/);
+ c.service.getState=original;lookup(c.service.state);await first;
+ assert.equal(c.calls.filter(call=>call.type==='ownerClipboardConnected').length,1);
+ assert.equal(c.service.clipboardLinking,false);
+});
+
+test('Continuity needs explicit opt-in and resets the capture baseline before its atomic change', async () => {
+ const off=await controller();await assert.rejects(off.invoke('updateClipboardSync',{continuity:true}),/Enable Clipboard tools/);
+ assert.equal(off.calls.some(c=>c.type==='continuityStart'||c.type==='continuityOptIn'),false);
+ const c=await controller({clipboardToolsEnabled:true});
+ assert.equal((await c.invoke('getState')).clipboardSync.continuity,false);
+ assert.equal(c.calls.some(call=>call.type==='continuityStart'),false);
+ await assert.rejects(c.invoke('updateClipboardSync',{continuity:true,receiveMode:'history'}),/separately/);
+ const state=await c.invoke('updateClipboardSync',{continuity:true});
+ assert.equal(state.clipboardSync.receiveMode,'clipboard');assert.equal(state.clipboardSync.enabled,true);
+ assert.ok(c.calls.findIndex(call=>call.type==='clipboardBaselineReset')<c.calls.findIndex(call=>call.type==='continuityOptIn'));
+ assert.equal(c.calls.filter(call=>call.type==='continuityStart').length,1);
+ await c.invoke('updateClipboardSync',{paused:true});assert.equal(c.calls.at(-1).type,'continuityStop');
+ await c.invoke('updateClipboardTools',{enabled:false});assert.equal(c.calls.at(-1).type,'continuityStop');
+});
+test('background test mode never constructs or starts Continuity networking',async()=>{
+ const c=await controller({env:{LEX_DRIFT_BACKGROUND_TEST:'1'},clipboardToolsEnabled:true});
+ assert.equal(c.calls.some(call=>call.type==='continuityCreated'||call.type==='continuityStart'),false);
+ await assert.rejects(c.invoke('updateClipboardSync',{continuity:true}),/unavailable/);
+});
+test('automatic Continuity linking owns a scoped lock before lookup and revalidates the saved route', async () => {
+ const host = {...siteHost, status: 'ready'}; let finish;
+ const link = new Promise(resolve => { finish = resolve; });
+ const c = await controller({hosts: [host], clipboardToolsEnabled: true, clipboardLink: link});
+ const config = c.calls.find(call => call.type === 'continuityCreated').values[0];
+ const original = c.service.getState.bind(c.service); let lookup;
+ c.service.getState = () => new Promise(resolve => { lookup = resolve; });
+ const pending = config.linkHost(host);
+ assert.equal(c.service.automaticClipboardLinking, true);
+ assert.notEqual(c.service.clipboardLinking, true);
+ for (const method of ['saveHost', 'removeHost', 'importConfig', 'configureAccess', 'refreshHosts', 'probeHosts', 'updateSettings', 'installUpdate', 'installRemotely', 'applyRemoteDesktopSetup', 'pairOwnedClipboardSync']) {
+   await assert.rejects(c.invoke(method, host), /device connection/);
+ }
+ await assert.rejects(config.linkHost(host), /active work/);
+ c.service.getState = original; lookup(c.service.state); await flush();
+ for (const method of ['enqueueFiles', 'enqueueText', 'send', 'sendMany']) c.service[method] = async value => { c.calls.push({type: method, values: [value]}); return c.service.state; };
+ for (const method of ['enqueueFiles', 'enqueueText', 'send', 'sendMany', 'getState', 'getReceived', 'getUpdates']) await c.invoke(method, 'synthetic');
+ assert.equal(c.calls.filter(call => call.type === 'automaticClipboardCancelled').length, 4);
+ await c.invoke('updateClipboardSync', {paused: true});
+ await c.invoke('updateClipboardTools', {enabled: false});
+ assert.equal(c.calls.some(call => call.type === 'clipboardSyncPaused' && call.values[0] === true), true);
+ assert.equal(c.calls.some(call => call.type === 'clipboardSyncEnabled' && call.values[0] === false), true);
+ finish(); await pending;
+ const request = c.calls.find(call => call.type === 'ownerClipboardConnected').values[0];
+ assert.equal(request.automatic, true); assert.equal(request.direction, 'both');
+ assert.equal(c.service.automaticClipboardLinking, false);
+ c.service.state.hosts = [{...host, address: 'changed.invalid'}]; await assert.rejects(config.linkHost(host), /saved machine changed/);
+ assert.equal(c.service.automaticClipboardLinking, false);
+ assert.equal(c.calls.filter(call => call.type === 'ownerClipboardConnected').length, 1);
+ c.service.state.hosts = [{...host, status: 'offline'}]; await assert.rejects(config.linkHost(host), /saved machine changed/);
+ c.service.authenticationSetup = true; await assert.rejects(config.linkHost(host), /active work/);
+});
+test('optional clipboard startup failure keeps the shelf available and reports a safe disabled state', async () => {
+ for (const clipboardSyncDisableError of [false, true]) {
+   const c = await controller({clipboardToolsEnabled: true, clipboardSyncEnabled: true, clipboardSyncStartError: true, clipboardSyncDisableError});
+   assert.equal(c.windows.length, 1); assert.equal(c.trays.length, 1);
+   assert.equal(c.calls.some(call => call.type === 'workerAcquire'), true);
+   assert.equal(c.calls.some(call => call.type === 'receivedStart'), true);
+   assert.equal(c.calls.some(call => call.type === 'updatesStart'), true);
+   assert.equal(c.calls.some(call => call.type === 'quit' || call.type === 'errorDialog'), false);
+   const state = await c.invoke('getState');
+   assert.equal(state.clipboardSync.enabled, false);
+   assert.match(state.clipboardSync.error, /off for this session/);
+   assert.equal(state.clipboardSync.error.includes('private startup detail'), false);
+   assert.deepEqual(c.errors, []);
+   await c.invoke('getReceived'); await c.invoke('getUpdates');
+ }
+});
+test('Allow again requires tools and can restore an excluded identity during a pending link',async()=>{
+ const off=await controller();await assert.rejects(off.invoke('restoreClipboardPeer',{id:'fixture'}),/Enable Clipboard tools/);
+ const c=await controller({clipboardToolsEnabled:true});c.service.clipboardLinking=true;
+ await c.invoke('restoreClipboardPeer',{id:'stable-fixture-id'});
+ assert.equal(c.calls.find(call=>call.type==='clipboardPeerRestored').values[0],'stable-fixture-id');
+});
+test('quit waits for the Continuity coordinator before closing sync and the shared worker',async()=>{
+ const c=await controller({clipboardToolsEnabled:true});c.app.emit('before-quit',{preventDefault(){}});await flush();await flush();
+ const events=c.calls.map(call=>call.type);
+ assert.ok(events.indexOf('continuityShutdown')<events.indexOf('clipboardSyncShutdown'));
+ assert.ok(events.indexOf('clipboardSyncShutdown')<events.indexOf('workerClose'));
 });

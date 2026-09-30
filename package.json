@@ -1,7 +1,7 @@
 {
   "name": "shelfdock",
   "productName": "ShelfDock",
-  "version": "0.5.0",
+  "version": "0.7.4",
   "description": "A calm shelf for files, clipboard, and connected machines.",
   "author": "LexiLominite",
   "private": true,
@@ -12,19 +12,22 @@
     "build": "vite build",
     "start": "npm run build && electron .",
     "test": "node --test tests/*.test.cjs",
-    "package:mac": "npm run build && electron-builder --mac zip --arm64 --publish never",
+    "package:mac": "node scripts/build-native-glass.cjs && npm run build && electron-builder --mac zip --arm64 --publish never",
     "package:win": "npm run build && electron-builder --win portable --x64 --publish never",
     "package:linux": "npm run build && electron-builder --linux tar.gz --x64 --publish never",
     "package:linux-arm": "npm run build && electron-builder --linux tar.gz --arm64 --publish never",
-    "test:ui": "node tests/ui/flows.cjs && node tests/ui/clipboard.cjs && node tests/ui/mac-install.cjs && node tests/ui/optional-tools.cjs && node tests/ui/received.cjs && node tests/ui/updates.cjs && node tests/ui/focus.cjs && node tests/ui/onboarding.cjs",
+    "test:ui": "node tests/ui/flows.cjs && node tests/ui/clipboard.cjs && node tests/ui/clipboard-sync.cjs && node tests/ui/continuity.cjs && node tests/ui/mac-install.cjs && node tests/ui/optional-tools.cjs && node tests/ui/received.cjs && node tests/ui/updates.cjs && node tests/ui/focus.cjs && node tests/ui/onboarding.cjs && node tests/ui/remote-desktop.cjs && node tests/ui/remote-install.cjs && node --test tests/ui/glass.cjs",
     "test:ui:screenshots": "node tests/ui/screenshots.cjs",
-    "test:ui:palette": "node tests/ui/palette.cjs"
+    "test:ui:palette": "node tests/ui/palette.cjs",
+    "test:native-glass": "node scripts/verify-native-glass.cjs"
   },
   "dependencies": {
+    "@novnc/novnc": "1.7.0",
     "lucide-react": "1.48.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "ssh2": "1.17.0"
+    "ssh2": "1.17.0",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "electron": "44.4.5",
@@ -41,14 +44,22 @@
     "files": [
       "dist/**/*",
       "desktop/**/*",
+      "installers/**/*",
       "package.json",
       "!node_modules/ssh2/lib/protocol/crypto/build/**/*",
       "!node_modules/cpu-features/**/*",
-      "!node_modules/nan/**/*"
+      "!node_modules/nan/**/*",
+      "!desktop/native/**/*"
     ],
     "mac": {
       "category": "public.app-category.utilities",
-      "identity": null
+      "identity": "-",
+      "extraResources": [
+        {
+          "from": "desktop/native/shelfdock-glass.node",
+          "to": "native/shelfdock-glass.node"
+        }
+      ]
     },
     "win": {
       "target": "portable",

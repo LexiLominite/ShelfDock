@@ -1,10 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, ArrowRight, ArrowUpRight, Check, CheckCheck, ChevronDown, CircleAlert, Clipboard, Download, File, FileText, Folder, History, KeyRound, Laptop, Loader2, Monitor, MoreHorizontal, MousePointer2, Network, Pencil, Plus, RefreshCw, Search, Send, Server, Settings2, Trash2, Undo2, Upload, Wifi, X } from 'lucide-react';
 import ClipboardPanel from './ClipboardPanel';
 import { tabbableElements } from './focus.mjs';
 import TunnelPanel from './TunnelPanel';
 import MachineCard from './MachineCard';
 import MacInstallPanel from './MacInstallPanel';
+const RemoteDesktopPanel = lazy(() => import('./RemoteDesktopPanel'));
+import RemoteInstallPanel from './RemoteInstallPanel';
 import ReceivedPanel from './ReceivedPanel';
 import UpdatesPanel from './UpdatesPanel';
 import OnboardingPanel, { onboardingSettled, writeOnboardingRecord } from './OnboardingPanel';
@@ -13,6 +15,8 @@ const ITEM_MIME = 'application/x-drift-items';
 const emptyState = { clipboardTools: { enabled: false, showTab: true, historyEnabled: false }, hosts: [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'strong', viewMode: 'expanded' }, discovery: { warnings: [], lastScan: null }, environment: {} };
 const demoState = {
   ...emptyState,
+  clipboardSync: { enabled: false, paused: false, receiveMode: 'history', continuity: false, peers: [], excludedPeers: [] },
+  clipboardContinuity: { running: false, devices: [] },
   hosts: [
     { id: 'demo-studio', name: 'Studio', address: '100.64.1.20', user: 'studio', port: 22, destination: '~/Desktop', route: 'tailscale', source: 'Wave', status: 'ready', os: 'posix' },
     { id: 'demo-laptop', name: 'Work laptop', address: 'work-laptop.local', user: 'alex', port: 22, destination: '~/Desktop', route: 'lan', source: 'SSH', status: 'ready', os: 'posix' },
@@ -27,13 +31,126 @@ const routeLabel = (route) => route === 'tailscale' ? 'Tailscale' : route === 'l
 const statusLabel = (status) => ({ ready: 'Ready', 'auth-required': 'Needs access', offline: 'Offline', checking: 'Checking', unknown: 'Unchecked' })[status] || 'Unchecked';
 const hostIcon = (host) => /spark|server/i.test(host.name) ? Server : /book|laptop/i.test(host.name) ? Laptop : Monitor;
 const orderHosts = (hosts) => { const rank = { ready: 0, checking: 1, unknown: 2, 'auth-required': 3, offline: 4 }; return [...hosts].sort((a, b) => (rank[a.status] ?? 2) - (rank[b.status] ?? 2)); };
+const syncDirections = [['send', 'Send only'], ['receive', 'Receive only'], ['both', 'Both directions']];
+const hostOptionLabel = (host) => (typeof host?.name === 'string' && host.name.trim()) || (typeof host?.label === 'string' && host.label.trim()) || 'Computer';
+const peerOptionLabel = (peer) => (typeof peer?.label === 'string' && peer.label.trim()) || (typeof peer?.name === 'string' && peer.name.trim()) || 'Connected device';
+const peerDirection = (value) => (value === 'send' || value === 'receive' || value === 'both' ? value : 'both');
+// Older snapshots omit clipboardSync. Treat that as sync off and no peers.
+const peersCount = (peers) => Array.isArray(peers) ? peers.filter((peer) => peer?.status === 'connected' && !peer.paused).length : 0;
+const clipboardSyncState = (state) => (state?.clipboardSync && typeof state.clipboardSync === 'object' ? state.clipboardSync : {});
+function ClipboardSyncSettings({ state, busy, action }) {
+  const toolsOn = state.clipboardTools?.enabled === true;
+  const sync = clipboardSyncState(state);
+  const enabled = sync.enabled === true;
+  const continuity = sync.continuity === true;
+  const devices = Array.isArray(state.clipboardContinuity?.devices) ? state.clipboardContinuity.devices : [];
+  const excludedPeers = Array.isArray(sync.excludedPeers) ? sync.excludedPeers.filter((peer) => peer && typeof peer.id === 'string') : [];
+  const connectedCount = peersCount(sync.peers);
+
+  const paused = sync.paused === true;
+  const requestedReceive = sync.receiveMode ?? sync.receive;
+  const receiveMode = requestedReceive === 'clipboard' ? 'clipboard' : 'history';
+  const hosts = Array.isArray(state?.hosts) ? state.hosts.filter((host) => host && host.id != null && host.id !== '') : [];
+  const peers = Array.isArray(sync.peers) ? sync.peers.filter((peer) => peer && peer.id != null && peer.id !== '') : [];
+  const error = typeof sync.error === 'string' ? sync.error.trim() : '';
+  const locked = !toolsOn || !!busy;
+  const secureStoreAvailable = sync.available !== false;
+  const connectionLocked = locked || !secureStoreAvailable || !enabled || paused;
+  const [hostId, setHostId] = useState('');
+  const [direction, setDirection] = useState('both');
+  const [connection, setConnection] = useState({ status: '', error: '' });
+  const connectLock = useRef(false);
+  const selectedHostId = hosts.some((host) => host.id === hostId) ? hostId : '';
+  const connect = async () => {
+    if (connectionLocked || !selectedHostId || connectLock.current) return;
+    connectLock.current = true;
+    setConnection({ status: 'connecting', error: '' });
+    try {
+      const next = await action('pairOwnedClipboardSync', { hostId: selectedHostId, direction }, undefined, true);
+      const nextSync = clipboardSyncState(next);
+      const failure = next?.actionError || nextSync.error;
+      const connectedPeer = nextSync.peers?.find((peer) => peer.id === next?.clipboardLinkedPeerId && peer.status === 'connected');
+      setConnection(failure ? { status: '', error: failure } : connectedPeer ? { status: 'connected', peerId: connectedPeer.id, error: '' } : { status: '', error: 'Could not connect. Check that both apps are open, sync is enabled and resumed on both devices, and SSH key access works, then try again.' });
+    } finally { connectLock.current = false; }
+  };
+  const changeConnectionChoice = (setter, value) => { setter(value); setConnection({ status: '', error: '' }); };
+
+  return <div className="clipboard-sync-settings">
+    <div className="setting-row">
+      <div><strong>Continuity clipboard</strong>
+        <p>Copy here, then paste on another linked device. Turn this on in each running app to share new text, links and images through trusted SSH key access to your Ready saved machines.</p>
+        <p>Incoming copies replace the system clipboard and are saved to history. Existing clipboard contents and history are not sent when you enable it.</p>
+        {!toolsOn && <p>Turn on Clipboard tools before enabling Continuity clipboard.</p>}
+        {!secureStoreAvailable && <p role="status">A secure system store is required for Continuity clipboard.</p>}
+      </div>
+      <button type="button" role="switch" aria-checked={continuity} aria-label="Continuity clipboard" disabled={locked || (!secureStoreAvailable && !continuity)} className={`switch ${continuity ? 'on' : ''}`} onClick={() => action('updateClipboardSync', { continuity: !continuity })}><span /></button>
+    </div>
+    {continuity && <div className="clipboard-continuity-status">
+      <p role="status" aria-live="polite" aria-atomic="true">{!toolsOn || !enabled ? 'Continuity clipboard is stopped.' : paused ? 'Continuity clipboard is paused.' : `${connectedCount} ${connectedCount === 1 ? 'device' : 'devices'} connected. Copy here and paste on a linked device.`}</p>
+      {!enabled && toolsOn && <button type="button" className="quiet-button" aria-label="Resume Continuity clipboard" disabled={locked || !secureStoreAvailable} onClick={() => action('updateClipboardSync', { continuity: true })}>Resume</button>}
+      {enabled && <button type="button" className="quiet-button" aria-label={paused ? 'Resume Continuity clipboard' : 'Pause Continuity clipboard'} disabled={locked} onClick={() => action('updateClipboardSync', { paused: !paused })}>{paused ? 'Resume' : 'Pause'}</button>}
+      {devices.length > 0 && <ul className="clipboard-continuity-devices">{devices.map((device) => <li key={device.hostId}><strong>{hostOptionLabel(device)}</strong><span>{device.status === 'connected' ? 'Connected' : device.status === 'connecting' ? 'Connecting' : device.status === 'excluded' ? 'Removed' : device.status === 'paused' ? 'Paused' : device.status === 'waiting' ? 'Waiting for app and sync' : device.status === 'error' ? 'Needs attention' : 'Offline'}{device.detail ? ` · ${device.detail}` : ''}</span></li>)}</ul>}
+      {!devices.length && !connectedCount && <p>Ready saved machines will appear here. Keep both apps running with Continuity clipboard enabled.</p>}
+    </div>}
+    {continuity && error && <p className="clipboard-sync-error" role="alert">{error}</p>}
+    <details className="clipboard-sync-advanced"><summary>Advanced clipboard sync</summary>
+    <div className="setting-row">
+      <div>
+        <strong>Sync between devices</strong>
+        <p>Connect your own saved machine using trusted SSH key access; keep both apps open with Clipboard tools and sync enabled and resumed on both devices.</p>
+        {!toolsOn && <p>Turn on Clipboard tools before connecting devices.</p>}
+        {enabled && !paused && <p>Supported new text, links, and images can sync with connected devices. Pause or turn off sync to stop sharing.</p>}
+        {enabled && paused && <p>Sync is paused on this computer. Resume it before connecting or sending and receiving copies.</p>}
+        {!secureStoreAvailable && <p role="status">A secure system store is unavailable. Sync and device connections are disabled on this device.</p>}
+      </div>
+      <button type="button" role="switch" aria-checked={enabled} aria-label="Sync between devices" disabled={locked || continuity || (!secureStoreAvailable && !enabled)} className={`switch ${enabled ? 'on' : ''}`} onClick={() => action('updateClipboardSync', { enabled: !enabled })}><span /></button>
+    </div>
+    {connection.status !== 'connecting' && (connection.error || (!continuity && error)) && <p className="clipboard-sync-error" role="alert">{connection.error || error}</p>}
+    <fieldset className="clipboard-sync-receive">
+      <legend>Receive preference</legend>
+      <label className="clipboard-sync-choice"><input type="radio" name="clipboard-sync-receive" value="history" checked={receiveMode === 'history'} disabled={locked || continuity} onChange={() => action('updateClipboardSync', { receiveMode: 'history' })} /><span>Save to clipboard history</span></label>
+      <label className="clipboard-sync-choice"><input type="radio" name="clipboard-sync-receive" value="clipboard" checked={receiveMode === 'clipboard'} disabled={locked || continuity} onChange={() => action('updateClipboardSync', { receiveMode: 'clipboard' })} /><span>Also place on the system clipboard</span></label>
+      <p>Incoming items are saved to history even when automatic history is off. This preference also controls whether sync replaces what is currently copied.</p>
+    </fieldset>
+    {continuity && <p>Turn off Continuity clipboard to change manual sync and receive preferences. Your previous receive preference is restored.</p>}
+    {enabled && !continuity && <div className="clipboard-sync-actions"><button type="button" className="quiet-button" aria-label={paused ? 'Resume clipboard sync' : 'Pause clipboard sync'} disabled={locked} onClick={() => action('updateClipboardSync', { paused: !paused })}>{paused ? 'Resume' : 'Pause'}</button></div>}
+    <label className="clipboard-sync-field"><span aria-hidden="true">Machine</span><select aria-label="Machine" aria-describedby="clipboard-sync-trust-help" value={selectedHostId} disabled={connectionLocked} onChange={(event) => changeConnectionChoice(setHostId, event.target.value)}><option value="">Choose a machine</option>{hosts.map((host) => <option value={host.id} key={host.id}>{hostOptionLabel(host)}</option>)}</select></label>
+    <p id="clipboard-sync-trust-help">Connect device approves clipboard sync for your own machine through its saved SSH key access.</p>
+    <label className="clipboard-sync-field"><span aria-hidden="true">Direction</span><select aria-label="Direction" value={direction} disabled={connectionLocked} onChange={(event) => changeConnectionChoice(setDirection, event.target.value)}>{syncDirections.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+    <div className="clipboard-sync-actions"><button type="button" className="quiet-button" aria-busy={connection.status === 'connecting'} disabled={connectionLocked || !selectedHostId} onClick={connect}>{connection.status === 'connecting' ? 'Connecting…' : 'Connect device'}</button></div>
+    {(connection.status === 'connecting' || (connection.status === 'connected' && enabled && !paused && peers.some((peer) => peer.id === connection.peerId && peer.status === 'connected' && !peer.paused))) && <p role="status" aria-live="polite" aria-atomic="true">{connection.status === 'connecting' ? 'Connecting…' : `Connected to ${hostOptionLabel(hosts.find((host) => host.id === selectedHostId))}.`}</p>}
+    {peers.length > 0 && <ul className="clipboard-sync-peers">{peers.map((peer) => {
+      const label = peerOptionLabel(peer);
+      const peerPaused = peer.paused === true;
+      const peerStatus = paused ? 'Paused on this computer' : peerPaused ? 'Paused here' : peer.status === 'connected' ? 'Connected' : 'Offline';
+      return <li className="clipboard-sync-peer" key={peer.id}>
+        <div className="clipboard-sync-peer-head"><div className="clipboard-sync-peer-title"><strong>{label}</strong><span className={`clipboard-sync-peer-status ${peerStatus === 'Connected' ? 'connected' : ''}`} role="status" aria-live="polite" aria-atomic="true" aria-label={`${label}: ${peerStatus}`}>{peerStatus}</span></div><button type="button" className="danger-button" disabled={locked} onClick={() => action('revokeClipboardPeer', { id: peer.id })}>Revoke</button></div>
+        <div className="clipboard-sync-field"><span aria-hidden="true">Direction</span><select aria-label={`Direction for ${label}`} value={peerDirection(peer.direction)} disabled={locked} onChange={(event) => action('updateClipboardPeer', { id: peer.id, direction: event.target.value })}>{syncDirections.map(([value, name]) => <option value={value} key={value}>{name}</option>)}</select></div>
+        <button type="button" className="quiet-button" aria-label={peerPaused ? `Resume sync with ${label}` : `Pause sync with ${label}`} disabled={locked} onClick={() => action('updateClipboardPeer', { id: peer.id, paused: !peerPaused })}>{peerPaused ? 'Resume' : 'Pause'}</button>
+      </li>;
+    })}</ul>}
+    {peers.length > 0 && <p className="clipboard-sync-revoke-note">Revoke stops that computer immediately. Clipboard history on this device stays here. Removed devices stay excluded from automatic linking until you allow them again.</p>}
+    {excludedPeers.length > 0 && <div className="clipboard-sync-excluded"><strong>Removed devices</strong><ul>{excludedPeers.map((peer) => <li key={peer.id}><span>{peerOptionLabel(peer)}</span><button type="button" className="quiet-button" aria-label={`Allow ${peerOptionLabel(peer)} again`} disabled={locked} onClick={() => action('restoreClipboardPeer', { id: peer.id })}>Allow again</button></li>)}</ul><p>Allow again permits future linking when both apps have enabled it.</p></div>}
+    </details>
+  </div>;
+}
 
 function App() {
   const bridge = window.drift;
   const productName = bridge?.productName || 'ShelfDock';
+  const platform = bridge?.platform || 'unknown';
   useEffect(() => { document.title = productName; }, [productName]);
   const isDemo = !bridge;
   const [state, setState] = useState(isDemo ? demoState : emptyState);
+  useEffect(() => {
+    const surfaces = [document.documentElement, document.body];
+    const isMac = platform === 'darwin';
+    surfaces.forEach((surface) => {
+      surface.classList.toggle('platform-darwin', isMac);
+      surface.classList.toggle('liquid-glass', isMac && state.environment?.nativeGlass?.mode !== 'solid');
+    });
+    return () => surfaces.forEach((surface) => surface.classList.remove('platform-darwin', 'liquid-glass'));
+  }, [platform, state.environment?.nativeGlass?.mode]);
   const [activeSection, setActiveSection] = useState('transfers');
   const clipboardVisible = state.clipboardTools?.enabled === true && state.clipboardTools?.showTab !== false;
   useEffect(() => { if (!clipboardVisible && activeSection === 'clipboard') setActiveSection('transfers'); }, [clipboardVisible, activeSection]);
@@ -51,6 +168,7 @@ function App() {
   const [fieldFocused, setFieldFocused] = useState(false);
   const [removeArmed, setRemoveArmed] = useState(false);
   const stateRef = useRef(state);
+  const initialStateLoaded = useRef(false);
   const [loading, setLoading] = useState(!isDemo);
   const [machinesOpen, setMachinesOpen] = useState(true);
   const [filter, setFilter] = useState('all');
@@ -85,7 +203,10 @@ function App() {
   const [tunnelEntry, setTunnelEntry] = useState({ hostId: '', mode: 'local', tab: 'active' });
   const [tunnelBusy, setTunnelBusy] = useState(false);
   const [macInstallBusy, setMacInstallBusy] = useState(false);
+  const [remoteDesktopBusy, setRemoteDesktopBusy] = useState(false);
+  const [remoteInstallBusy, setRemoteInstallBusy] = useState(false);
   const [installHostId, setInstallHostId] = useState('');
+  const [remoteDesktopHostId, setRemoteDesktopHostId] = useState('');
   const [undoClock, setUndoClock] = useState(Date.now);
   const [reveal, setReveal] = useState(false);
   const fileInput = useRef(null);
@@ -96,6 +217,8 @@ function App() {
   const accessLock = useRef(false);
   const tunnelLock = useRef(false);
   const macInstallLock = useRef(false);
+  const remoteDesktopLock = useRef(false);
+  const remoteInstallLock = useRef(false);
   const undoLock = useRef(false);
   const demoUndo = useRef(null);
   const machineMenuRef = useRef(null);
@@ -103,7 +226,7 @@ function App() {
   const modalRef = useRef(null);
   const closeModal = useCallback(() => {
     const leavingOnboarding = modalState.current === 'onboarding';
-    if (!leavingOnboarding && (accessLock.current || tunnelLock.current || macInstallLock.current || updateLock.current)) return;
+    if (!leavingOnboarding && (accessLock.current || tunnelLock.current || macInstallLock.current || remoteInstallLock.current || remoteDesktopLock.current || updateLock.current)) return;
     if (leavingOnboarding) writeOnboardingRecord('skipped');
     setAccessPassword(''); setAccessError(''); setAccessHostId(''); setModal(null);
   }, []);
@@ -119,10 +242,12 @@ function App() {
     if (target === 'machines') { setMachinesOpen(true); setActiveSection('transfers'); }
     if (target === 'activity') setHistoryOpen(true);
   }, []);
-  const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current || macInstallLock.current || updateLock.current, []);
+  const operationLocked = useCallback(() => tunnelLock.current || accessLock.current || transferLock.current || macInstallLock.current || remoteInstallLock.current || remoteDesktopLock.current || updateLock.current, []);
   const closeQuick = useCallback(() => { if (!tunnelLock.current) setQuickHost(null); }, []);
   const setTunnelOperation = useCallback((value) => { tunnelLock.current = value; setTunnelBusy(value); }, []);
   const setMacInstallOperation = useCallback(value => { macInstallLock.current = value; setMacInstallBusy(value); }, []);
+  const setRemoteInstallOperation = useCallback(value => { remoteInstallLock.current = value; setRemoteInstallBusy(value); }, []);
+  const setRemoteDesktopOperation = useCallback(value => { remoteDesktopLock.current = value; setRemoteDesktopBusy(value); }, []);
   const applyTunnels = useCallback((next) => { if (next?.active && next?.history) setTunnels(next); }, []);
   const noticeNow = useCallback((message, kind = 'info') => {
     setNotice({ message, kind });
@@ -155,11 +280,14 @@ function App() {
   useEffect(() => {
     if (!bridge) return;
     let mounted = true;
-    Promise.resolve(bridge.getState()).then((next) => { if (mounted) applyState(next); }).catch((error) => noticeNow(error.message || `Could not load ${productName}.`, 'error')).finally(() => { if (mounted) setLoading(false); });
+    Promise.resolve(bridge.getState()).then((next) => { if (mounted) { applyState(next); initialStateLoaded.current = true; } }).catch((error) => noticeNow(error.message || `Could not load ${productName}.`, 'error')).finally(() => { if (mounted) setLoading(false); });
     const offState = bridge.onState?.(applyState);
     const offReveal = bridge.onReveal?.(() => { setWindowSeen(true); setReveal(true); setTimeout(() => setReveal(false), 600); });
     return () => { mounted = false; offState?.(); offReveal?.(); };
   }, [bridge, applyState, noticeNow]);
+  useEffect(() => {
+    if (!loading && initialStateLoaded.current) Promise.resolve(bridge?.confirmRendererReady?.()).catch(() => {});
+  }, [loading, bridge]);
   useEffect(() => {
     const onVisible = () => { if (document.visibilityState !== 'hidden') setWindowSeen(true); };
     document.addEventListener('visibilitychange', onVisible);
@@ -207,14 +335,14 @@ function App() {
   }, [quickHost, machinesOpen, state.hosts, filter, search]);
   useEffect(() => {
     if (typeof bridge?.setInteraction !== 'function') return;
-    Promise.resolve(bridge.setInteraction({ dragging: Boolean(dragging), editing: Boolean(modal || clipboardEditing || machineMenu || quickHost || fieldFocused || tunnelBusy), sensitiveEditing: modal === 'access' })).catch(() => {});
+    Promise.resolve(bridge.setInteraction({ dragging: Boolean(dragging), editing: Boolean(modal || clipboardEditing || machineMenu || quickHost || fieldFocused || tunnelBusy), sensitiveEditing: modal === 'access' || modal === 'remote-desktop' })).catch(() => {});
   }, [bridge, dragging, modal, clipboardEditing, machineMenu, quickHost, fieldFocused, tunnelBusy]);
   useEffect(() => { setSelectedItems((ids) => ids.filter((id) => state.items.some((item) => item.id === id))); }, [state.items]);
   useEffect(() => { setSelectedHostIds((ids) => ids.filter((id) => state.hosts.some((host) => host.id === id))); }, [state.hosts]);
   useEffect(() => {
     if (!modal) return;
     const before = document.activeElement;
-    const returnTo = modal === 'install' ? document.querySelector(`[data-host-id="${CSS.escape(installHostId)}"] button[aria-haspopup="menu"]`) : before;
+    const returnTo = (modal === 'install' || modal === 'remote-install') ? document.querySelector(`[data-host-id="${CSS.escape(installHostId)}"] button[aria-haspopup="menu"]`) : before;
     const focusTimer = setTimeout(() => { const nodes = tabbableElements(modalRef.current); (nodes.find(node => node.matches('input, textarea, select')) || nodes[0])?.focus(); }, 0);
     const trap = (event) => {
       if (event.key === 'Escape') { event.preventDefault(); closeModal(); return; }
@@ -228,7 +356,7 @@ function App() {
     document.addEventListener('keydown', trap);
     return () => {
       clearTimeout(focusTimer); document.removeEventListener('keydown', trap);
-      if (modal === 'install') {
+      if (modal === 'install' || modal === 'remote-install') {
         const machine = returnTo?.closest('.machine-card')?.querySelector('.machine-main');
         machine?.focus();
         // Compact actions become visible once the machine has focus.
@@ -276,8 +404,23 @@ function App() {
       if (index >= 0) next.hosts[index] = host; else next.hosts.push(host);
     }
     if (method === 'removeHost') next.hosts = next.hosts.filter((host) => host.id !== value);
-    if (method === 'updateClipboardTools') { next.clipboardTools = { ...next.clipboardTools, ...value }; if (!next.clipboardTools.enabled) next.clipboardTools.historyEnabled = false; }
+    if (method === 'updateClipboardTools') { next.clipboardTools = { ...next.clipboardTools, ...value }; if (!next.clipboardTools.enabled) { next.clipboardTools.historyEnabled = false; if (next.clipboardSync) next.clipboardSync.enabled = false; next.clipboardContinuity = { running: false, devices: [] }; } }
     if (method === 'updateSettings') next.settings = { ...next.settings, ...value };
+    const ensureSync = () => { if (!next.clipboardSync || typeof next.clipboardSync !== 'object') next.clipboardSync = { enabled: false, paused: false, receiveMode: 'history', continuity: false, peers: [], excludedPeers: [] }; if (!Array.isArray(next.clipboardSync.peers)) next.clipboardSync.peers = []; return next.clipboardSync; };
+    if (method === 'updateClipboardSync' && value && typeof value === 'object') {
+      const sync = ensureSync();
+      if (typeof value.continuity === 'boolean') {
+        if (value.continuity && !sync.continuity) sync.manualReceiveMode = sync.receiveMode;
+        if (value.continuity) Object.assign(sync, { enabled: true, paused: false, receiveMode: 'clipboard' });
+        else if (sync.continuity) sync.receiveMode = sync.manualReceiveMode || 'history';
+      }
+      Object.assign(sync, value);
+      next.clipboardContinuity = { running: sync.continuity === true && sync.enabled && !sync.paused, devices: [] };
+    }
+    if (method === 'pairOwnedClipboardSync' && value && typeof value === 'object') { const sync = ensureSync(); const host = next.hosts.find((item) => item.id === value.hostId); const id = uid(); sync.peers.push({ id, hostId: value.hostId, label: host?.name || host?.label || 'Computer', direction: peerDirection(value.direction), paused: false, status: 'connected' }); next.clipboardLinkedPeerId = id; }
+    if (method === 'updateClipboardPeer' && value?.id) { const sync = ensureSync(); sync.peers = sync.peers.map((peer) => peer.id === value.id ? { ...peer, ...value } : peer); }
+    if (method === 'revokeClipboardPeer' && value?.id) { const sync = ensureSync(); const peer = sync.peers.find((item) => item.id === value.id); if (peer) sync.excludedPeers = [...(sync.excludedPeers || []).filter((item) => item.id !== value.id), { id: peer.id, label: peer.label }]; sync.peers = sync.peers.filter((peer) => peer.id !== value.id); }
+    if (method === 'restoreClipboardPeer' && value?.id) { const sync = ensureSync(); sync.excludedPeers = (sync.excludedPeers || []).filter((peer) => peer.id !== value.id); }
     if (method === 'send' || method === 'sendMany') {
       for (const hostId of value.hostIds || [value.hostId]) next.history.unshift({ id: uid(), hostName: next.hosts.find((host) => host.id === hostId)?.name || 'Machine', itemCount: value.itemIds.length, status: 'failed', message: 'Demo preview: no files were transferred. Open the desktop application to send.', timestamp: new Date().toISOString() });
       noticeNow('Demo preview only. No files were transferred.', 'info');
@@ -295,12 +438,12 @@ function App() {
     if (typeof bridge[method] !== 'function') throw new Error(`This version of ${productName} does not support ${method}.`);
     return applyState(await bridge[method](value));
   };
-  const action = async (method, value, success) => {
+  const action = async (method, value, success, inlineError = false) => {
     if (macInstallLock.current) { noticeNow('Wait for Mac installation to finish.'); return null; }
     if (tunnelLock.current) { noticeNow('Wait for forwarding setup to finish.'); return null; }
     setBusy(method);
     try { const next = await call(method, value); if (success) noticeNow(success); return next; }
-    catch (error) { noticeNow(error.message || 'Something went wrong. Please try again.', 'error'); return null; }
+    catch (error) { const message = error.message || 'Something went wrong. Please try again.'; if (inlineError) return { actionError: message }; noticeNow(message, 'error'); return null; }
     finally { setBusy(''); }
   };
   const addText = async (text) => {
@@ -464,7 +607,7 @@ function App() {
   const settingUpAccess = busy === 'configureAccess' || busy === 'forgetPassword';
   const showMachineMenu = (event, host) => {
     event.preventDefault(); event.stopPropagation();
-    if (accessLock.current || tunnelLock.current || transferLock.current || macInstallLock.current) return;
+    if (accessLock.current || tunnelLock.current || transferLock.current || macInstallLock.current || remoteInstallLock.current || remoteDesktopLock.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.type === 'contextmenu' && event.clientX > 0 ? event.clientX : rect.right - 225;
     const y = event.type === 'contextmenu' && event.clientY > 0 ? event.clientY : rect.bottom + 5;
@@ -518,7 +661,7 @@ function App() {
   const undoExpiresAt = Date.parse(state.clearShelfUndo?.expiresAt || '');
   const undoSeconds = Math.max(0, Math.ceil((undoExpiresAt - Math.max(undoClock, Date.now())) / 1000));
   const canUndoClear = state.clearShelfUndo?.count > 0 && undoSeconds > 0;
-  const modalTitle = modal === 'onboarding' ? `${productName} ${onboardingMode === 'learn' ? 'feature guide' : 'quick start'}` : modal === 'updates' ? 'Updates' : modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' ? 'Install on this device' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`;
+  const modalTitle = modal === 'onboarding' ? `${productName} ${onboardingMode === 'learn' ? 'feature guide' : 'quick start'}` : modal === 'updates' ? 'Updates' : modal === 'host' ? hostForm.id ? 'Edit machine' : 'Add a machine' : modal === 'install' || modal === 'remote-install' ? 'Install on this device' : modal === 'remote-desktop' ? 'Remote Desktop' : modal === 'tunnels' ? 'Port forwarding' : modal === 'batch' ? 'Review transfer' : modal === 'access' ? 'Set up access' : modal === 'text' ? 'Add text' : `${productName} settings`;
 
   return (
     <div className={`app view-${state.settings?.viewMode || 'expanded'} ${machinesOpen ? 'machines-open' : ''} ${dragging ? 'is-dragging' : ''} ${reveal ? 'revealed' : ''}`} onFocusCapture={event => setFieldFocused(/INPUT|TEXTAREA|SELECT/.test(event.target.tagName))} onBlurCapture={event => { if (!/INPUT|TEXTAREA|SELECT/.test(event.relatedTarget?.tagName || '')) setFieldFocused(false); }} onDragEnter={(event) => { if (modal) { event.preventDefault(); return; } if (!dragging) { setDragSnapshot(orderHosts(stateRef.current.hosts)); setDragging(true); } setMachinesOpen(true); }} onDragLeave={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); if (event.relatedTarget && event.currentTarget.contains(event.relatedTarget)) return; if (event.target === event.currentTarget || event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom || (event.clientX === 0 && event.clientY === 0)) endDrag(); }} onDragOver={(event) => { event.preventDefault(); if (modal) return; if (!machinesOpen) setMachinesOpen(true); }} onDropCapture={endDrag} onDrop={(event) => { event.preventDefault(); endDrag(); }}>
@@ -556,7 +699,7 @@ function App() {
           <div className="shelf-bottom"><span title={`Shake once to show ${productName}. Pause briefly, then shake again to hide. ⌘ / Ctrl + Shift + Space also toggles the shelf.`}><MousePointer2 size={13} /> {isDemo ? 'Shake to show or hide in the desktop app' : state.settings?.shakeEnabled ? 'Shake to show / hide · ⌘ / Ctrl + Shift + Space' : state.environment?.shortcutAvailable === false ? `Open ${productName} from your tray` : 'Show / hide · ⌘ / Ctrl + Shift + Space'}</span>{state.items.length > 0 && <button className="text-button muted" disabled={!!busy || sending} onClick={() => action('clearItems')}>Clear shelf</button>}</div>
           {state.items.length > 0 && selectedHostIds.length === 0 && <div className="send-bar"><span>{activeHost ? <><span className={`tiny-dot ${activeHost.status}`} /> {activeHost.name}<small>{activeHost.destination || '~/Desktop'}</small></> : 'Choose a machine, or drop an item on one.'}</span><button className="primary-button compact" disabled={!activeHost || activeHost.status !== 'ready' || !selectedItems.length || sending || settingUpAccess} onClick={() => sendItems(activeHost.id, selectedItems)}>{sending ? <Loader2 size={14} className="spinning" /> : <Send size={13} />} Send{selectedItems.length > 0 ? ` ${selectedItems.length}` : ''}</button></div>}
           {state.items.length > 0 && selectedHostIds.length > 0 && <div className="send-bar batch-send-bar"><span><strong>{selectedItems.length} {selectedItems.length === 1 ? 'item' : 'items'} → {selectedHostIds.length} {selectedHostIds.length === 1 ? 'machine' : 'machines'}</strong><small>{!selectedItems.length ? 'Select the items you want to send.' : !batchHostsReady ? 'A selected machine needs an SSH check.' : 'Review destinations before sending.'}</small></span><button className="primary-button compact" disabled={!selectedItems.length || !batchHostsReady || !!busy || sending} onClick={reviewBatch}><Send size={13} /> Review & send</button></div>}
-        </section> : activeSection === 'received' ? <ReceivedPanel bridge={bridge} snapshot={received} onSnapshot={applyReceived} history={state.history} shelfItems={state.items} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || updateBusy} uiState={receivedUIState} onUIStateChange={setReceivedUIState} onAddToShelf={next => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine to send onward.'); }} onSelectSent={ids => { setSelectedItems(ids); setActiveSection('transfers'); noticeNow('Shelf items selected. Choose a machine; nothing has been sent.'); }} /> : <ClipboardPanel bridge={bridge} viewMode={state.settings?.viewMode || 'expanded'} uiState={clipboardUIState} onUIStateChange={setClipboardUIState} capturePaused={Boolean(modal || machineMenu || quickHost || fieldFocused || tunnelBusy)} blocked={settingUpAccess || sending || tunnelBusy} onEditingChange={setClipboardEditing} onAddToShelf={(next) => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine or drag the item to send.'); }} />}
+        </section> : activeSection === 'received' ? <ReceivedPanel bridge={bridge} snapshot={received} onSnapshot={applyReceived} history={state.history} shelfItems={state.items} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || remoteInstallBusy || remoteDesktopBusy || updateBusy} uiState={receivedUIState} onUIStateChange={setReceivedUIState} onAddToShelf={next => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine to send onward.'); }} onSelectSent={ids => { setSelectedItems(ids); setActiveSection('transfers'); noticeNow('Shelf items selected. Choose a machine; nothing has been sent.'); }} /> : <ClipboardPanel bridge={bridge} viewMode={state.settings?.viewMode || 'expanded'} uiState={clipboardUIState} onUIStateChange={setClipboardUIState} capturePaused={Boolean(modal || machineMenu || quickHost || fieldFocused || tunnelBusy)} blocked={Boolean(modal) || settingUpAccess || sending || tunnelBusy || macInstallBusy || remoteInstallBusy || remoteDesktopBusy || updateBusy} onEditingChange={setClipboardEditing} onAddToShelf={(next) => { applyState(next); if (next?.enqueuedItemIds?.length) setSelectedItems(next.enqueuedItemIds); setActiveSection('transfers'); noticeNow('Added to Transfers. Choose a machine or drag the item to send.'); }} />}
 
         {machinesOpen && <aside className="machines-pane" id="machines-pane" aria-label="Machines">
           <div className="pane-heading"><div><h2>Machines</h2></div><button className="icon-button small" aria-label="Close machines" disabled={tunnelBusy || dragging} onClick={() => !dragging && setMachinesOpen(false)}><X size={15} /></button></div>
@@ -564,12 +707,12 @@ function App() {
           {selectedHostIds.length > 0 && <div className="batch-machine-selection"><span>{selectedHostIds.length} selected for a batch</span><button className="text-button" disabled={sending || settingUpAccess} onClick={() => setSelectedHostIds([])}>Clear</button></div>}
           <div className="machine-search"><Search size={14} /><input disabled={tunnelBusy || dragging} aria-label="Search machines" placeholder="Find a machine…" value={search} onChange={(event) => setSearch(event.target.value)} />{search && <button aria-label="Clear search" onClick={() => setSearch('')}><X size={12} /></button>}</div>
           <div className="route-tabs" role="group" aria-label="Connection route">{[['all', 'All'], ['tailscale', 'Tailscale'], ['lan', 'LAN'], ['ssh', 'SSH']].map(([value, label]) => <button key={value} disabled={tunnelBusy || dragging} aria-pressed={filter === value} className={filter === value ? 'selected' : ''} onClick={() => setFilter(value)}>{label}</button>)}</div>
-          <div className="machine-list">{loading ? <div className="empty-machines"><Loader2 size={22} className="spinning" /><p>Finding your machines…</p></div> : visibleHosts.length === 0 ? <div className="empty-machines"><Network size={24} /><strong>{search ? 'No matches' : 'A place to start'}</strong><p>{search ? 'Try another name or address.' : 'Import Wave and SSH connections, or add a machine yourself.'}</p></div> : visibleHosts.map((host) => <MachineCard key={host.id} host={host} selected={selectedHost === host.id} onSelect={() => { setSelectedHost(host.id); openQuick(host.id); }} batchSelected={selectedHostIds.includes(host.id)} batchDisabled={sending || settingUpAccess || tunnelBusy || (!selectedHostIds.includes(host.id) && (host.status !== 'ready' || selectedHostIds.length >= 20))} onBatch={() => toggleBatchHost(host)} onAccess={() => openAccess(host)} onViewForwards={() => openTunnels(host.id, 'local', 'active')} onMenu={event => showMachineMenu(event,host)} menuOpen={machineMenu?.hostId === host.id} dropState={dragHost === host.id ? host.status === 'ready' ? 'drop-ready' : 'drop-blocked' : ''} dropHandlers={{
+          <div className="machine-list">{loading ? <div className="empty-machines"><Loader2 size={22} className="spinning" /><p>Finding your machines…</p></div> : visibleHosts.length === 0 ? <div className="empty-machines"><Network size={24} /><strong>{search ? 'No matches' : 'A place to start'}</strong><p>{search ? 'Try another name or address.' : 'Import Wave and SSH connections, or add a machine yourself.'}</p></div> : visibleHosts.map((host) => <MachineCard key={host.id} host={host} selected={selectedHost === host.id} onSelect={() => { setSelectedHost(host.id); openQuick(host.id); }} batchSelected={selectedHostIds.includes(host.id)} batchDisabled={sending || settingUpAccess || tunnelBusy || macInstallBusy || remoteInstallBusy || remoteDesktopBusy || (!selectedHostIds.includes(host.id) && (host.status !== 'ready' || selectedHostIds.length >= 20))} onBatch={() => toggleBatchHost(host)} onAccess={() => openAccess(host)} onViewForwards={() => openTunnels(host.id, 'local', 'active')} onMenu={event => showMachineMenu(event,host)} menuOpen={machineMenu?.hostId === host.id} dropState={dragHost === host.id ? host.status === 'ready' ? 'drop-ready' : 'drop-blocked' : ''} dropHandlers={{
             onDragEnter: event => { event.preventDefault(); setDragHost(host.id); },
             onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setDragHost(''); },
             onDragOver: event => { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = host.status === 'ready' && !sending && !settingUpAccess && !tunnelBusy ? 'copy' : 'none'; setDragHost(host.id); },
             onDrop: event => dropHost(event,host),
-          }} dragging={dragging} blocked={settingUpAccess || sending || !!busy} viewMode={state.settings?.viewMode || 'expanded'} bridge={bridge} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} operationLocked={operationLocked} quickOpen={quickHost?.id === host.id} quickMode={quickPreferences[host.id]?.mode || 'local'} quickAdvanced={quickPreferences[host.id]?.advanced || false} quickRevision={quickPreferences[host.id]?.revision || 0} onQuickOpen={() => openQuick(host.id)} onQuickClose={closeQuick} receipts={state.history.filter(entry => entry.hostId === host.id)} items={state.items} />)}</div>
+          }} dragging={dragging} blocked={settingUpAccess || sending || !!busy || macInstallBusy || remoteInstallBusy || remoteDesktopBusy} viewMode={state.settings?.viewMode || 'expanded'} bridge={bridge} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} operationLocked={operationLocked} quickOpen={quickHost?.id === host.id} quickMode={quickPreferences[host.id]?.mode || 'local'} quickAdvanced={quickPreferences[host.id]?.advanced || false} quickRevision={quickPreferences[host.id]?.revision || 0} onQuickOpen={() => openQuick(host.id)} onQuickClose={closeQuick} receipts={state.history.filter(entry => entry.hostId === host.id)} items={state.items} />)}</div>
           <div className="machine-pane-bottom"><button className="add-machine" disabled={settingUpAccess || sending} onClick={() => openHost()}><Plus size={15} /> Add a machine <span>manually</span></button><div className="discovery-actions"><button disabled={!!busy} onClick={() => action('refreshHosts')}><RefreshCw size={12} className={busy === 'refreshHosts' ? 'spinning' : ''} /> Import / refresh</button><button title="Check all machines using their saved SSH access, including saved passwords" disabled={!!busy} onClick={() => action('probeHosts')}><CheckCheck size={13} className={busy === 'probeHosts' ? 'spinning' : ''} /> Check SSH</button></div></div>
         </aside>}
       </main>
@@ -585,15 +728,18 @@ function App() {
         <button role="menuitem" onClick={() => openTunnels(machineMenu.hostId, 'local', 'active')}><History size={15} /><span><strong>Active & saved forwards</strong><small>Stop, repeat, or edit notes</small></span></button>
         <button role="menuitem" onClick={() => { const host = state.hosts.find(host => host.id === machineMenu.hostId); setMachineMenu(null); openHost(host); }}><Pencil size={15} /><span><strong>Edit machine</strong><small>Rename, address, or destination folder</small></span></button>
         <button role="menuitem" onClick={() => { const host = state.hosts.find(host => host.id === machineMenu.hostId); setMachineMenu(null); openAccess(host); }}><KeyRound size={15} /><span><strong>SSH access</strong></span></button>
-        {state.environment?.platform === 'darwin' && <button role="menuitem" onClick={() => { if (operationLocked()) return; setInstallHostId(machineMenu.hostId); setQuickHost(null); setMachineMenu(null); setModal('install'); }}><Download size={15} /><span><strong>Install on this device…</strong></span></button>}
+        <button role="menuitem" onClick={() => { if (operationLocked()) return; setRemoteDesktopHostId(machineMenu.hostId); setQuickHost(null); setMachineMenu(null); setModal('remote-desktop'); }}><Monitor size={15} /><span><strong>Remote screen…</strong></span></button>
+        <button role="menuitem" onClick={() => { if (operationLocked()) return; setInstallHostId(machineMenu.hostId); setQuickHost(null); setMachineMenu(null); setModal('remote-install'); }}><Download size={15} /><span><strong>Install on this device…</strong></span></button>
         <button role="menuitem" className="danger-button" onClick={async () => { if (!removeArmed) { setRemoveArmed(true); return; } const id = machineMenu.hostId; setMachineMenu(null); await action('removeHost', id, 'Machine removed.'); }}><Trash2 size={15} /><span><strong>{removeArmed ? 'Confirm remove machine' : 'Remove machine…'}</strong></span></button>
       </div>}
       {modal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeModal(); }} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); }}><section className={`modal ${modal === 'onboarding' ? 'onboarding-modal' : modal === 'tunnels' ? 'tunnel-modal' : modal === 'host' || modal === 'access' || modal === 'install' ? 'host-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title" aria-describedby={modal === 'onboarding' ? 'onboarding-progress' : undefined} ref={modalRef}>
-        <div className="modal-header"><h2 id="modal-title">{modalTitle}</h2><button className="icon-button" aria-label="Close dialog" disabled={modal !== 'onboarding' && (settingUpAccess || tunnelBusy || macInstallBusy || updateBusy)} onClick={closeModal}><X size={17} /></button></div>
+        <div className="modal-header"><h2 id="modal-title">{modalTitle}</h2><button className="icon-button" aria-label="Close dialog" disabled={modal !== 'onboarding' && (settingUpAccess || tunnelBusy || macInstallBusy || remoteInstallBusy || remoteDesktopBusy || updateBusy)} onClick={closeModal}><X size={17} /></button></div>
         {modal === 'onboarding' && <OnboardingPanel productName={productName} mode={onboardingMode} step={onboardingStep} onStep={setOnboardingStep} onMode={setOnboardingMode} onFinish={finishOnboarding} onSkip={closeModal} onNavigate={navigateFromOnboarding} wayland={Boolean(state.environment?.wayland)} shortcutAvailable={state.environment?.shortcutAvailable !== false} />}
         {modal === 'tunnels' && <TunnelPanel key={`${tunnelEntry.hostId}-${tunnelEntry.mode}-${tunnelEntry.tab}`} bridge={bridge} host={state.hosts.find((host) => host.id === tunnelEntry.hostId)} initialMode={tunnelEntry.mode} initialTab={tunnelEntry.tab} snapshot={tunnels} onSnapshot={applyTunnels} onBusyChange={setTunnelOperation} onClose={closeModal} blocked={settingUpAccess || sending} />}
-        {modal === 'updates' && <UpdatesPanel bridge={bridge} onClose={closeModal} onBusyChange={setUpdateOperation} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || dragging || tunnels.active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))} />}
-        {modal === 'install' && <MacInstallPanel key={installHostId} bridge={bridge} hosts={state.hosts} initialHostId={installHostId} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy} />}
+        {modal === 'updates' && <UpdatesPanel bridge={bridge} onClose={closeModal} onBusyChange={setUpdateOperation} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || remoteInstallBusy || remoteDesktopBusy || dragging || tunnels.active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))} />}
+        {modal === 'install' && <MacInstallPanel key={installHostId} bridge={bridge} hosts={state.hosts} initialHostId={installHostId} onBusyChange={setMacInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy || remoteInstallBusy || remoteDesktopBusy} />}
+        {modal === 'remote-install' && <RemoteInstallPanel key={installHostId} bridge={bridge} hosts={state.hosts} initialHostId={installHostId} onBusyChange={setRemoteInstallOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || remoteDesktopBusy} />}
+        {modal === 'remote-desktop' && <Suspense fallback={<p role="status">Loading remote screen…</p>}><RemoteDesktopPanel key={remoteDesktopHostId} bridge={bridge} host={state.hosts.find(h => h.id === remoteDesktopHostId)} onBusyChange={setRemoteDesktopOperation} onClose={closeModal} blocked={settingUpAccess || sending || tunnelBusy || macInstallBusy || remoteInstallBusy} /></Suspense>}
         {modal === 'text' && <form onSubmit={async (event) => { event.preventDefault(); const next = await addText(textDraft); if (next) setModal(null); }}><p className="modal-intro">Paste a note, a link, or something worth keeping. It will wait on your shelf.</p><textarea className="text-editor" autoFocus rows={8} placeholder="Put your words here…" value={textDraft} onChange={(event) => setTextDraft(event.target.value)} /><div className="modal-actions"><span className="keyboard-hint">⌘ / Ctrl + V also works on the shelf</span><button className="primary-button" disabled={!textDraft.trim() || !!busy}><Plus size={14} /> Add to shelf</button></div></form>}
         {modal === 'host' && <form onSubmit={saveMachine}>
           <p className="modal-intro">Use a LAN name, a Tailscale IP, or any SSH address. A successful SSH check makes it ready to receive.</p>
@@ -628,7 +774,8 @@ function App() {
           <label className="setting-row"><div><strong>Display density</strong><p>Choose how much detail appears in each row.</p></div><select aria-label="View size" disabled={!!busy} value={state.settings?.viewMode || 'expanded'} onChange={(event) => action('updateSettings', { viewMode: event.target.value })}><option value="compact">Compact</option><option value="expanded">Balanced</option><option value="large">Expanded</option></select></label>
           <div className="setting-row"><div><strong>Enable Clipboard tools</strong><p>Optional history, favourites and snippets. Off by default. Turning this off stops recording and keeps saved items; re-enable history separately when ready.</p></div><button role="switch" aria-checked={state.clipboardTools?.enabled === true} aria-label="Enable Clipboard tools" disabled={!!busy} className={`switch ${state.clipboardTools?.enabled ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { enabled: !state.clipboardTools?.enabled })}><span /></button></div>
           <div className="setting-row"><div><strong>Show Clipboard tab</strong><p>Hide the tab to keep the workspace focused. Hiding does not pause history that you have enabled. {state.clipboardTools?.historyEnabled ? 'Automatic history is on.' : 'Automatic history is off.'}</p></div><button role="switch" aria-checked={state.clipboardTools?.showTab !== false} aria-label="Show Clipboard tab" disabled={!!busy || !state.clipboardTools?.enabled} className={`switch ${state.clipboardTools?.showTab !== false ? 'on' : ''}`} onClick={() => action('updateClipboardTools', { showTab: state.clipboardTools?.showTab === false })}><span /></button></div>
-          <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. Clipboard tools are optional. After enabling them in Settings, separately choose automatic history in Clipboard; enabling tools alone does not record anything. When enabled, it saves copies locally and pauses during editing or password setup. Copies are never sent automatically.</p></div></div>
+          <ClipboardSyncSettings state={state} busy={busy} action={action} />
+          <div className="settings-note"><Clipboard size={17} /><div><strong>Paste when you choose.</strong><p>Use Paste from clipboard or ⌘ / Ctrl + V on the shelf to collect copied files, an image, or plain text. Pasting only adds items; drag them onto a machine to send. Clipboard tools are optional. Automatic history stays off until you enable it in Clipboard. With Sync on, supported new copies can be sent to connected devices according to each device’s direction, even when automatic history is off. Sync pauses while Clipboard capture is paused, including during editing and password entry. Pause or turn Sync off to stop sharing.</p></div></div>
           <div className="settings-note"><KeyRound size={17} /><div><strong>Ready means SSH is verified.</strong><p>Use a machine’s Access button to connect with an SSH key, set one up with a password used once, or securely save a password. SSH must already be running, and the machine’s fingerprint must be trusted. Keep Tailscale running for Tailscale routes. Drop items on a ready machine or press Send to transfer them.</p></div></div>
           {!isDemo && <div className="settings-note"><MousePointer2 size={17} /><div><strong>A keyboard shortcut, too.</strong><p>{state.environment?.shortcutAvailable === false ? `The keyboard shortcut couldn’t register on this device. Open ${productName} from the tray. Escape tucks it away.` : `Press ⌘ / Ctrl + Shift + Space to show or hide ${productName}. Escape also hides it.`}</p></div></div>}
           <div className="settings-note"><Folder size={17} /><div><strong>A fresh folder on the Desktop.</strong><p>Each transfer gets its own folder inside the machine’s destination. Your shelf keeps the original items so you can send them again.</p></div></div>
