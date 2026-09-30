@@ -1,10 +1,10 @@
 #!/bin/sh
-# Save and review this file, then run: sh bootstrap.sh [0.7.1]
+# Save and review this file, then run: sh bootstrap.sh [0.7.2]
 set -eu
 umask 077
 [ "$#" -le 1 ] || { echo 'Usage: sh bootstrap.sh [version]' >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo 'Python 3 (standard library) is required; no runtime is installed automatically.' >&2; exit 2; }
-exec python3 - "${1:-0.7.1}" <<'PY'
+exec python3 - "${1:-0.7.2}" <<'PY'
 import gzip, hashlib, json, os, pathlib, re, select, shutil, signal, struct, subprocess, sys, tarfile, tempfile, time
 
 def require(ok, message):

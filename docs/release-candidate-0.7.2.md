@@ -1,0 +1,9 @@
+# ShelfDock / LexBridge 0.7.2
+
+This patch corrects the washed-out white/grey Mac material introduced in 0.7.1. The native NSGlassEffectView now uses DarkAqua without a tint. The Mac renderer uses smoked graphite surfaces, light readable text, lavender link and selection ink, and stronger purple fills for actions. Pale input/menu/shelf backgrounds and bright inset outlines have been removed. Native glass remains visible through the transparent document and smoked root layer.
+
+The Mac Reduce Transparency fallback is also graphite (#1c1d24), including when the renderer removes its liquid-glass class. Reduce Motion continues to leave static material intact. Windows, Linux and browser previews retain their existing light palette. No transfer, forwarding, clipboard-sync, SSH link, gesture, or global-shortcut behavior changes are intended. Clipboard tools and sync remain off by default.
+
+Focused native fixtures begin in a light appearance and verify the actual view becomes DarkAqua without a tint. They use invisible windows and disposable profiles and verify ownership, resizing, input and cleanup. The CSS regression composes text against smoked layers over both white and black backdrops, checks primary actions, inputs and overlays, and checks Mac solid fallback and non-Mac restoration. Verification results and package/install receipts belong in the corresponding work/v072-release and work/v072-local-install reports.
+
+Mac packages use ad-hoc signing; Apple Developer signing and notarization remain pending. Physical two-computer system-clipboard testing and native Windows bootstrap/DACL execution remain unverified. Existing 0.7.0 VNC/installer qualification limits remain. New SSH owner linking requires 0.7.1 or later on both running applications and explicit tools/sync enablement. Prior linked peers retain protocol version 1 compatibility.

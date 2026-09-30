@@ -22,7 +22,7 @@ test('Reduce Transparency restores the original view and solid canvas', () => {
   const result = adapter.applyNativeGlass(window);
   assert.equal(result.mode, 'solid');
   assert.equal(result.applied, false);
-  assert.deepEqual(calls, [['remove', true], ['vibrancy', null], ['background', '#E8EBF6']]);
+  assert.deepEqual(calls, [['remove', true], ['vibrancy', null], ['background', '#1c1d24']]);
 });
 test('Reduce Motion keeps native glass independently of transparency', () => {
   const {adapter, window} = fixture({supported: true, reducedTransparency: false, reducedMotion: true});
@@ -39,6 +39,9 @@ test('older macOS or missing addon keeps vibrancy; non-Mac never loads addon', (
   missing.getNativeGlassStatus(); assert.equal(loads, 1);
   const linux = createNativeGlassAdapter({platform: 'linux', load: () => { throw Error('must not load'); }});
   assert.equal(linux.getNativeGlassStatus().mode, 'solid');
+  const linuxCalls = [];
+  assert.equal(linux.applyNativeGlass({...window, setVibrancy: value => linuxCalls.push(['vibrancy', value]), setBackgroundColor: value => linuxCalls.push(['background', value])}).mode, 'solid');
+  assert.deepEqual(linuxCalls, []);
 });
 test('accessibility subscriptions update mode and unsubscribe exactly once', () => {
   const {adapter, native, calls} = fixture();

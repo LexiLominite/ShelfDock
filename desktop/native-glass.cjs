@@ -33,7 +33,7 @@ function createNativeGlassAdapter({platform = process.platform, load = loadNativ
       // Restore Electron's original view before changing its background/vibrancy.
       if (module) module.remove(window.getNativeWindowHandle());
       window.setVibrancy?.(null);
-      window.setBackgroundColor?.('#E8EBF6');
+      window.setBackgroundColor?.('#1c1d24');
       return {...availability, applied: false, mode: 'solid', reason: 'reduced-transparency'};
     }
     if (module && availability.supported) {

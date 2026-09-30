@@ -87,9 +87,9 @@ static const char *ApplyGlass(NSWindow *window, double radius, bool clear) {
   }
   state.glass.cornerRadius = std::fmax(0, std::fmin(32, radius));
   state.glass.style = clear ? 1 : 0;
-  // ShelfDock intentionally uses a light lavender UI on every platform.
-  state.glass.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
-  state.glass.tintColor = [NSColor colorWithSRGBRed:0.80 green:0.79 blue:0.95 alpha:0.06];
+  // Use the dark system material without a whitening tint, like a dark popover.
+  state.glass.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+  state.glass.tintColor = nil;
   // A full shelf is not one interactive button; leave effectIsInteractive at
   // its default NO. AppKit independently honours accessibility motion settings.
   window.opaque = NO;
@@ -158,6 +158,9 @@ static napi_value Inspect(napi_env env, napi_callback_info info) {
     SetBool(env, result, "nativeGlass", state && [window.contentView isKindOfClass:NSClassFromString(@"NSGlassEffectView")]);
     SetBool(env, result, "visible", window.isVisible);
     SetBool(env, result, "contentAttached", state && state.originalContent.window == window && state.glass.contentView == state.originalContent);
+    NSString *appearance = [window.contentView.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+    SetBool(env, result, "effectiveDarkAqua", [appearance isEqualToString:NSAppearanceNameDarkAqua]);
+    SetBool(env, result, "untinted", state && state.glass.tintColor == nil);
     napi_value field;
     napi_create_string_utf8(env, NSStringFromClass(window.contentView.class).UTF8String, NAPI_AUTO_LENGTH, &field);
     napi_set_named_property(env, result, "containerClass", field);
@@ -248,6 +251,7 @@ int main() {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 640, 540) styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:YES];
     window.releasedWhenClosed = NO;
+    window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua];
     NSView *original = window.contentView;
     NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(30, 30, 150, 30)];
     [original addSubview:field];
@@ -267,6 +271,9 @@ int main() {
       ShelfDockGlassState *state = objc_getAssociatedObject(window, &kGlassState);
       assert([window.contentView isKindOfClass:NSClassFromString(@"NSGlassEffectView")]);
       assert(state.glass.contentView == original);
+      NSString *appearance = [state.glass.effectiveAppearance bestMatchFromAppearancesWithNames:@[NSAppearanceNameAqua, NSAppearanceNameDarkAqua]];
+      assert([appearance isEqualToString:NSAppearanceNameDarkAqua]);
+      assert(state.glass.tintColor == nil);
       assert(window.firstResponder == responder);
       assert(!window.isVisible);
       NSView *hit = [window.contentView hitTest:NSMakePoint(45, 45)];

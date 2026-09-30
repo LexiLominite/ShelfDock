@@ -1,7 +1,7 @@
 {
   "name": "shelfdock",
   "productName": "ShelfDock",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "A calm shelf for files, clipboard, and connected machines.",
   "author": "LexiLominite",
   "private": true,
