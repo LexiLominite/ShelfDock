@@ -34,10 +34,16 @@ const harness = require('./harness.cjs');
       await dialog.waitFor();
       await page.waitForFunction(() => document.querySelector('[role="dialog"]')?.contains(document.activeElement));
       assert.equal(await page.getByLabel('Device to install on').inputValue(), 'host-0');
-      await page.getByText(/Installation currently supports Macs only/).waitFor();
-      assert.equal(await page.evaluate(() => window.__calls.filter(c => c.method === 'previewMacInstall' || c.method === 'installOnMac').length), 0, 'Opening installer never probes or installs');
+      await page.getByText(/Remote installation works for Mac, Windows x64 and Linux/).waitFor();
+      assert.equal(await page.evaluate(() => window.__calls.filter(c => ['previewMacInstall', 'installOnMac', 'previewRemoteInstall', 'installRemotely', 'inspectRemoteDesktop', 'startRemoteDesktop', 'previewRemoteDesktopSetup', 'applyRemoteDesktopSetup'].includes(c.method)).length), 0, 'Opening installer never probes or installs');
       await page.screenshot({path: path.join(output, `${label}-install.png`)});
       await page.keyboard.press('Escape');
+      await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.closest('[data-host-id]')?.getAttribute('data-host-id') === 'host-0', null, {timeout: 2000});
+      await page.keyboard.press('Shift+F10');
+      await menu.waitFor();
+      await item.click();
+      await dialog.waitFor();
+      await page.getByRole('button', {name: 'Close dialog', exact: true}).click();
       await page.waitForFunction(() => !document.querySelector('[role="dialog"]') && document.activeElement?.closest('[data-host-id]')?.getAttribute('data-host-id') === 'host-0', null, {timeout: 2000});
       assert.deepEqual(page.errors, []); await page.close();
     }

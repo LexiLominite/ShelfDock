@@ -81,10 +81,11 @@ export default function UpdatesPanel({ bridge, onClose, blocked = false, onBusyC
       </section>
       {release?.notes && <details className="updates-notes"><summary>What’s new in {release.version}</summary><pre>{release.notes}</pre><button className="quiet-button" disabled={installing} onClick={() => run('openUpdateRelease')}><ExternalLink size={14} /> Release on GitHub</button></details>}
       {state.result?.status === 'installed' && <p className="updates-verified"><Check size={16} /> Updated to {state.result.version}.{state.result.backupRetained ? ' The previous app backup is retained beside the installation.' : ''}</p>}
-      {state.result && state.result.status !== 'installed' && <p className="settings-warning">The last update did not complete in this running app.{state.result.backupRetained ? ' The previous app backup is retained beside the installation.' : ''} You can retry or use the verified download.</p>}
-      <p className="updates-help">Automatic checks and downloads are off until you enable them. Installing always needs your choice.</p>
+      {state.result?.status === 'starting' && <p className="updates-help">Confirming the updated app is ready…</p>}
+      {state.result && !['installed', 'starting'].includes(state.result.status) && <p className="settings-warning">The last update did not complete in this running app.{state.result.backupRetained ? ' The previous app backup is retained beside the installation.' : ''} You can retry or use the verified download.</p>}
+      <p className="updates-help">New installs check for updates and download them quietly. You can change either choice here. Installing always needs your choice.</p>
       <div className="modal-actions"><button className="quiet-button" disabled={installing} onClick={onClose}>Done</button></div>
     </>}
-    {(error || state?.error) && <p className="updates-error" role="alert">{error || state.error}</p>}
+    {(state?.preferenceWarning || error || state?.error) && <p className="updates-error" role="alert">{state?.preferenceWarning || error || state.error}</p>}
   </div>;
 }

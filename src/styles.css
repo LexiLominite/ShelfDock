@@ -454,3 +454,311 @@ h1 { font-size: clamp(29px, 4.2vw, 39px); line-height: 1.07; font-weight: 540; l
 
 .settings-button { position: relative; }
 .settings-update-dot { position: absolute; right: 1px; top: 1px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--canvas); }
+
+/* ── macOS Liquid Glass ──────────────────────────────────────────────
+   Active only when body.liquid-glass is set (macOS with vibrancy).
+   The native NSVisualEffectView blur is behind the window; CSS
+   backdrop-filter adds per-element frosted layers within it.
+   Windows and Linux continue to use the solid lavender palette. */
+
+body.liquid-glass {
+  --canvas: transparent;
+  --surface: rgba(255, 255, 255, 0.52);
+  --surface-raised: rgba(240, 242, 249, 0.42);
+  --surface-hover: rgba(228, 232, 242, 0.48);
+  --line: rgba(209, 214, 227, 0.42);
+  --line-strong: rgba(124, 132, 154, 0.55);
+  --shadow-soft: rgba(37, 42, 64, 0.05);
+  --shadow-floating: rgba(37, 42, 64, 0.10);
+  --backdrop: rgba(37, 42, 64, 0.22);
+  --drop-overlay: rgba(250, 250, 253, 0.72);
+  --accent-soft: rgba(232, 229, 248, 0.50);
+  --accent-ring: rgba(99, 83, 217, 0.12);
+  --danger-soft: rgba(247, 229, 232, 0.55);
+  --warning-soft: rgba(245, 235, 214, 0.55);
+  --success-soft: rgba(224, 238, 229, 0.55);
+  background: transparent;
+}
+
+/* Titlebar: make room for macOS traffic light buttons. */
+body.liquid-glass .titlebar { padding-left: 82px; }
+
+/* App background is transparent so native vibrancy shows. */
+body.liquid-glass .app { background: transparent; }
+
+/* ── Glass surfaces ─────────────────────────────────────────────── */
+
+/* Drop tray / shelf — main content area glass. */
+body.liquid-glass .drop-tray {
+  backdrop-filter: blur(16px) saturate(1.6);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6);
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow: 0 4px 20px var(--shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+body.liquid-glass .drop-tray::before { border-color: rgba(209, 214, 227, 0.30); }
+
+/* Machine cards — glass tiles in the sidebar. */
+body.liquid-glass .machine-target {
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border-color: rgba(255, 255, 255, 0.30);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+body.liquid-glass .machine-target.selected {
+  border-color: rgba(99, 83, 217, 0.45);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.40), 0 0 0 1px rgba(99, 83, 217, 0.15);
+}
+
+/* Machines pane divider — softer glass border. */
+body.liquid-glass .machines-pane { border-left-color: rgba(209, 214, 227, 0.30); }
+
+/* ── Modals — stronger frosted glass ───────────────────────────── */
+
+body.liquid-glass .modal-backdrop {
+  backdrop-filter: blur(6px) saturate(1.2);
+  -webkit-backdrop-filter: blur(6px) saturate(1.2);
+}
+body.liquid-glass .modal {
+  background: rgba(250, 250, 253, 0.68);
+  backdrop-filter: blur(24px) saturate(1.8);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8);
+  border-color: rgba(255, 255, 255, 0.40);
+  box-shadow: 0 12px 48px rgba(37, 42, 64, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+/* Context menu — glass popover. */
+body.liquid-glass .machine-context-menu {
+  background: rgba(250, 250, 253, 0.72);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow: 0 8px 30px rgba(37, 42, 64, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+body.liquid-glass .machine-context-menu > button:hover,
+body.liquid-glass .machine-context-menu > button:focus-visible {
+  background: rgba(232, 229, 248, 0.45);
+}
+
+/* ── Glass buttons ──────────────────────────────────────────────── */
+
+/* Primary button — glass pill with inner highlight. */
+body.liquid-glass .primary-button {
+  background: rgba(99, 83, 217, 0.88);
+  border-color: rgba(99, 83, 217, 0.65);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 2px 8px rgba(99, 83, 217, 0.18);
+}
+body.liquid-glass .primary-button:hover:not(:disabled) {
+  background: rgba(81, 67, 184, 0.92);
+  border-color: rgba(81, 67, 184, 0.70);
+}
+
+/* Quiet button — semi-transparent glass. */
+body.liquid-glass .quiet-button {
+  background: rgba(255, 255, 255, 0.40);
+  border-color: rgba(209, 214, 227, 0.40);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30);
+}
+body.liquid-glass .quiet-button:hover {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(209, 214, 227, 0.55);
+}
+
+/* Machines toggle — glass pill in header. */
+body.liquid-glass .machines-toggle {
+  background: rgba(240, 242, 249, 0.40);
+  border-color: rgba(209, 214, 227, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+body.liquid-glass .machines-toggle:hover,
+body.liquid-glass .machines-toggle.active {
+  background: rgba(255, 255, 255, 0.50);
+}
+
+/* Icon buttons — glass hover state. */
+body.liquid-glass .icon-button:hover {
+  background: rgba(228, 232, 242, 0.45);
+}
+
+/* ── Workspace tabs — glass segments ───────────────────────────── */
+
+body.liquid-glass .workspace-tabs {
+  background: rgba(255, 255, 255, 0.35);
+  border-color: rgba(209, 214, 227, 0.30);
+  backdrop-filter: blur(8px) saturate(1.3);
+  -webkit-backdrop-filter: blur(8px) saturate(1.3);
+}
+body.liquid-glass .workspace-tabs button.active {
+  background: rgba(232, 229, 248, 0.45);
+}
+body.liquid-glass .workspace-tabs button > span {
+  background: rgba(240, 242, 249, 0.45);
+}
+
+/* Route tabs in machines pane. */
+body.liquid-glass .route-tabs button.selected {
+  background: rgba(232, 229, 248, 0.40);
+}
+
+/* ── Panels and overlays ───────────────────────────────────────── */
+
+/* Toast notifications — glass bar. */
+body.liquid-glass .toast {
+  background: rgba(250, 250, 253, 0.70);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  border-color: rgba(209, 214, 227, 0.40);
+  box-shadow: 0 4px 16px rgba(37, 42, 64, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+/* Undo bar — glass accent. */
+body.liquid-glass .shelf-undo {
+  background: rgba(240, 242, 249, 0.65);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+  box-shadow: 0 4px 20px rgba(37, 42, 64, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.40);
+}
+
+/* History panel — glass dropdown. */
+body.liquid-glass .history-panel {
+  background: rgba(250, 250, 253, 0.68);
+  backdrop-filter: blur(20px) saturate(1.6);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6);
+  border-color: rgba(209, 214, 227, 0.35);
+  box-shadow: 0 6px 24px rgba(37, 42, 64, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+/* Clipboard list — glass container. */
+body.liquid-glass .clipboard-list {
+  background: rgba(255, 255, 255, 0.38);
+  border-color: rgba(209, 214, 227, 0.30);
+  backdrop-filter: blur(8px) saturate(1.3);
+  -webkit-backdrop-filter: blur(8px) saturate(1.3);
+}
+
+/* Clipboard detail pane — glass card. */
+body.liquid-glass .clipboard-detail {
+  background: rgba(255, 255, 255, 0.42);
+  border-color: rgba(209, 214, 227, 0.30);
+  backdrop-filter: blur(10px) saturate(1.3);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3);
+}
+
+/* Clipboard opt-in card. */
+body.liquid-glass .clipboard-opt-in {
+  background: rgba(255, 255, 255, 0.40);
+  border-color: rgba(209, 214, 227, 0.30);
+}
+
+/* Clipboard preferences panel. */
+body.liquid-glass .clipboard-preferences,
+body.liquid-glass .clipboard-snippet {
+  background: rgba(255, 255, 255, 0.40);
+  border-color: rgba(124, 132, 154, 0.35);
+}
+
+/* Send bar — glass tray. */
+body.liquid-glass .send-bar {
+  background: rgba(228, 232, 242, 0.40);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* Footer — subtle glass edge. */
+body.liquid-glass .app-footer {
+  border-top-color: rgba(209, 214, 227, 0.30);
+}
+
+/* ── Form inputs — glass fields ────────────────────────────────── */
+
+body.liquid-glass .field input,
+body.liquid-glass .field select,
+body.liquid-glass .setting-row select,
+body.liquid-glass .machine-search {
+  background: rgba(240, 242, 249, 0.40);
+  border-color: rgba(124, 132, 154, 0.40);
+}
+body.liquid-glass .text-editor {
+  background: rgba(240, 242, 249, 0.40);
+  border-color: rgba(124, 132, 154, 0.40);
+}
+
+/* ── Switches — glass track ────────────────────────────────────── */
+
+body.liquid-glass .switch {
+  background: rgba(124, 132, 154, 0.45);
+}
+body.liquid-glass .switch.on {
+  background: rgba(99, 83, 217, 0.80);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+body.liquid-glass .switch > span {
+  box-shadow: 0 1px 3px rgba(37, 42, 64, 0.15);
+}
+
+/* ── Tunnel panel — glass elements ─────────────────────────────── */
+
+body.liquid-glass .tunnel-tabs {
+  background: rgba(240, 242, 249, 0.35);
+}
+body.liquid-glass .tunnel-tabs > button.active {
+  background: rgba(232, 229, 248, 0.45);
+}
+body.liquid-glass .tunnel-entry {
+  border-color: rgba(209, 214, 227, 0.35);
+}
+body.liquid-glass .tunnel-direction {
+  background: rgba(240, 242, 249, 0.35);
+  border-color: rgba(209, 214, 227, 0.30);
+}
+
+/* ── Settings warning — softer glass fill ──────────────────────── */
+
+body.liquid-glass .settings-warning {
+  background: rgba(245, 235, 214, 0.45);
+}
+
+/* ── Access options — glass cards ──────────────────────────────── */
+
+body.liquid-glass .access-option {
+  border-color: rgba(209, 214, 227, 0.35);
+}
+body.liquid-glass .access-option.selected {
+  background: rgba(232, 229, 248, 0.40);
+  border-color: rgba(99, 83, 217, 0.40);
+}
+body.liquid-glass .access-machine {
+  background: rgba(240, 242, 249, 0.40);
+  border-color: rgba(209, 214, 227, 0.30);
+}
+
+/* ── Update dot — glass halo on transparent canvas ─────────────── */
+
+body.liquid-glass .settings-update-dot {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.50);
+}
+
+/* ── Count badge — glass pill ──────────────────────────────────── */
+
+body.liquid-glass .count {
+  background: rgba(232, 229, 248, 0.50);
+}
+
+/* ── Reduced motion: disable backdrop-filter for performance ───── */
+
+@media (prefers-reduced-motion: reduce) {
+  body.liquid-glass .drop-tray,
+  body.liquid-glass .machine-target,
+  body.liquid-glass .modal,
+  body.liquid-glass .modal-backdrop,
+  body.liquid-glass .machine-context-menu,
+  body.liquid-glass .workspace-tabs,
+  body.liquid-glass .toast,
+  body.liquid-glass .shelf-undo,
+  body.liquid-glass .history-panel,
+  body.liquid-glass .clipboard-list,
+  body.liquid-glass .clipboard-detail,
+  body.liquid-glass .send-bar {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

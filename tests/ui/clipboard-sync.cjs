@@ -72,7 +72,7 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
         return window.__state.clipboardSync;
       };
       window.drift.updateClipboardSync = async (value) => { window.__calls.push({ method: 'updateClipboardSync', value }); Object.assign(sync(), value); return publish(); };
-      window.drift.beginClipboardPairing = async () => { window.__calls.push({ method: 'beginClipboardPairing' }); sync().pairing = { code: 'ABCDEFGH', expiresAt: '2026-09-28T09:35:00.000Z' }; return publish(); };
+      window.drift.beginClipboardPairing = async () => { window.__calls.push({ method: 'beginClipboardPairing' }); sync().pairing = { code: 'ABCDEFGH', expiresAt: new Date(Date.now() + 300000).toISOString() }; return publish(); };
       window.drift.pairClipboardSync = async (value) => { window.__calls.push({ method: 'pairClipboardSync', value }); return publish(); };
       window.drift.updateClipboardPeer = async (value) => {
         window.__calls.push({ method: 'updateClipboardPeer', value });
@@ -146,7 +146,7 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     const revoke = dialog.getByRole('button', { name: 'Revoke', exact: true });
     await revoke.waitFor();
     assert.equal(await revoke.isEnabled(), true);
-    assert.equal(await dialog.getByText('Connected', { exact: true }).isVisible(), true);
+    assert.equal(await dialog.getByRole('status', { name: 'Studio: Connected', exact: true }).getAttribute('aria-live'), 'polite');
     assert.equal(await dialog.getByText('Revoke stops that computer immediately. Clipboard history on this device stays here.', { exact: true }).isVisible(), true);
     assert.match(await dialog.getByRole('alert').innerText(), /Studio does not have a ready ShelfDock sync endpoint/);
 
@@ -184,7 +184,10 @@ const calls = (page, method) => page.evaluate((name) => window.__calls.filter((c
     const pairingStatus = dialog.getByRole('status', { name: 'Pairing code ABCDEFGH', exact: true });
     await pairingStatus.waitFor();
     assert.equal((await pairingStatus.innerText()).trim(), 'ABCDEFGH');
-    assert.equal(await dialog.locator('.clipboard-sync-expiry time').getAttribute('dateTime'), '2026-09-28T09:35:00.000Z');
+    assert.ok(Date.parse(await dialog.locator('.clipboard-sync-expiry time').getAttribute('dateTime')) > Date.now());
+    await page.evaluate(() => { window.__state.clipboardSync.pairing.expiresAt = new Date(Date.now() + 100).toISOString(); window.__listeners.state(structuredClone(window.__state)); });
+    await dialog.getByRole('status').filter({ hasText: 'Pairing code expired.' }).waitFor();
+    assert.equal(await pairingStatus.count(), 0, 'An expired code is removed without needing another state update');
     await machine.selectOption('host-0');
     await codeInput.fill('234567ab');
     await direction.selectOption('receive');

@@ -155,7 +155,8 @@ class UpdateManager {
     Object.assign(this, { version, platform, arch, personal, enabled, isPackaged, execPath, portableExecutable, onChange, isBusy, quit, openExternal, revealFile, clock, stream, spawnProcess, identify, validateApp });
     this.edition = EDITIONS[personal ? 'personal' : 'public']; this.stream = stream || (personal ? createPrivateTransport({ spawnProcess }) : requestStream);
     this.baseDirectory = path.join(dataDir, 'updates'); this.directory = path.join(this.baseDirectory, personal ? 'personal' : 'public'); this.file = path.join(this.directory, 'preferences.json'); this.downloaded = null; this.release = null; this.timer = null; this.controller = null; this.disposed = false;
-    this.preferences = { autoCheck: false, autoDownload: false, includePrereleases: true };
+    this.preferences = { autoCheck: true, autoDownload: true, includePrereleases: true };
+    this.preferencesValid = true; this.preferenceWarning = '';
     this.state = { status: 'idle', error: '', progress: null, lastChecked: null, installation: { available: false, reason: 'Checking installation…' }, result: null };
     this.initialized = this.load().catch(() => { this.enabled = false; this.state.status = 'error'; this.state.error = 'The update cache could not be opened. Updates are unavailable; the rest of the app can still be used.'; this.state.installation = { available: false, reason: this.state.error }; });
   }
@@ -166,11 +167,17 @@ class UpdateManager {
     this.directory = await fs.realpath(this.directory); this.file = path.join(this.directory, 'preferences.json');
     const cacheStat = await fs.lstat(this.directory); this.cacheIdentity = { dev: cacheStat.dev, ino: cacheStat.ino };
     try {
-      const stat = await fs.lstat(this.file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8192) throw new Error('Invalid updater preferences.');
+      const stat = await fs.lstat(this.file);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 8192) throw new Error('Invalid updater preferences.');
       const saved = JSON.parse(await fs.readFile(this.file, 'utf8'));
-      if (saved.version === 1 && saved.repository === this.edition.repository) for (const key of Object.keys(this.preferences)) if (typeof saved[key] === 'boolean') this.preferences[key] = saved[key];
-      if (Number.isFinite(saved.lastChecked) && saved.lastChecked <= this.clock()) this.state.lastChecked = saved.lastChecked;
-    } catch (error) { if (error.code !== 'ENOENT') this.state.error = 'Update preferences could not be loaded. Automatic checks remain off.'; }
+      const keys = ['autoCheck', 'autoDownload', 'includePrereleases'];
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved) || saved.version !== 1 || saved.repository !== this.edition.repository || keys.some(key => typeof saved[key] !== 'boolean') || Object.keys(saved).some(key => !['version', 'repository', ...keys, 'lastChecked'].includes(key)) || (saved.lastChecked !== null && saved.lastChecked !== undefined && (!Number.isFinite(saved.lastChecked) || saved.lastChecked < 0 || saved.lastChecked > this.clock()))) throw new Error('Invalid updater preferences.');
+      this.preferences = Object.fromEntries(keys.map(key => [key, saved[key]]));
+      if (!this.preferences.autoCheck) this.preferences.autoDownload = false;
+      if (Number.isFinite(saved.lastChecked)) this.state.lastChecked = saved.lastChecked;
+    } catch (error) {
+      if (error.code !== 'ENOENT') { this.preferences = { autoCheck: false, autoDownload: false, includePrereleases: true }; this.preferencesValid = false; this.preferenceWarning = 'Update preferences could not be validated. Automatic checks and downloads are off until you save valid update settings.'; this.state.error = this.preferenceWarning; }
+    }
     this.state.installation = await this.identify(this);
     try {
       const saved = await readJSON(path.join(this.directory, 'download.json'));
@@ -190,11 +197,16 @@ class UpdateManager {
         if (typeof pending.backup === 'string' && path.basename(pending.backup).startsWith('.shelfdock-backup-' + pending.id)) try { const backup = await fs.lstat(pending.backup); backupRetained = !backup.isSymbolicLink() && (backup.isDirectory() || backup.isFile()); } catch {}
         const runningVersion = compareVersions(this.version, pending.version);
         if (runningVersion >= 0) {
-          if (runningVersion === 0) this.state.result = { status: 'installed', version: pending.version, backupRetained };
+          const startupConfirmed = runningVersion === 0 && result?.status === 'installed';
+          if (runningVersion === 0) this.state.result = { status: startupConfirmed ? 'installed' : 'starting', version: pending.version, backupRetained };
+          if (runningVersion === 0 && !startupConfirmed) this.pendingInstall = { ...pending, backupRetained };
+          else {
           // Consume only the journal, never the retained application backup.
           await fs.rm(path.join(this.directory, 'install.json'), { force: true });
           await fs.rm(path.join(this.directory, 'result-' + pending.id + '.json'), { force: true });
           await fs.rm(path.join(this.directory, 'ready-' + pending.id), { force: true });
+          await fs.rm(path.join(this.directory, 'started-' + pending.id), { force: true });
+          }
         } else {
           const failureStatuses = ['parent_running', 'changed', 'backup_failed', 'rolled_back', 'failed'];
           this.state.result = { status: failureStatuses.includes(result?.status) ? result.status : 'interrupted', version: pending.version, backupRetained };
@@ -211,11 +223,11 @@ class UpdateManager {
     }
   }
   snapshot() {
-    return clone({ ...this.state, preferences: this.preferences, release: this.release, currentVersion: this.version, platform: this.platform, arch: this.arch, personal: this.personal, canDownload: !!this.release?.asset && !!this.release?.checksumAsset, canInstall: !!this.downloaded && this.state.installation.available, downloaded: this.downloaded ? { name: this.downloaded.name, version: this.downloaded.version, size: this.downloaded.size, sha256: this.downloaded.sha256 } : null });
+    return clone({ ...this.state, preferences: this.preferences, preferenceWarning: this.preferenceWarning, release: this.release, currentVersion: this.version, platform: this.platform, arch: this.arch, personal: this.personal, canDownload: !!this.release?.asset && !!this.release?.checksumAsset && this.preferencesValid, canInstall: !!this.downloaded && this.state.installation.available, downloaded: this.downloaded ? { name: this.downloaded.name, version: this.downloaded.version, size: this.downloaded.size, sha256: this.downloaded.sha256 } : null });
   }
   async getState() { await this.initialized; return this.snapshot(); }
   emit() { if (!this.disposed) this.onChange(this.snapshot()); }
-  async persist() { await writeJSON(this.file, { version: 1, repository: this.edition.repository, ...this.preferences, lastChecked: this.state.lastChecked }); }
+  async persist() { await writeJSON(this.file, { version: 1, repository: this.edition.repository, ...this.preferences, lastChecked: this.state.lastChecked }); this.preferencesValid = true; this.preferenceWarning = ''; }
   begin(status) {
     if (!this.enabled) throw new Error('Updates are disabled in background test mode.');
     if (this.disposed) throw new Error('The updater is shutting down.');
@@ -224,6 +236,7 @@ class UpdateManager {
   }
   async check() {
     await this.initialized;
+    if (!this.preferencesValid) throw new Error(this.preferenceWarning);
     const controller = this.begin('checking'); const deadline = setTimeout(() => controller.abort(new Error('The update check timed out.')), 60000); deadline.unref?.();
     try {
       const bytes = await fetchBuffer(`https://api.github.com/repos/${this.edition.repository}/releases?per_page=100`, { signal: controller.signal, stream: this.stream });
@@ -250,6 +263,7 @@ class UpdateManager {
     this.preferences = { ...this.preferences, ...patch };
     if (!this.preferences.autoCheck) this.preferences.autoDownload = false;
     try { await this.persist(); } catch (error) { this.preferences = before; throw error; }
+    this.state.error = '';
     if (before.includePrereleases !== this.preferences.includePrereleases) { await this.forgetDownload(); this.release = null; this.state.status = 'idle'; }
     this.emit(); this.schedule(); return this.snapshot();
   }
@@ -287,6 +301,7 @@ class UpdateManager {
   }
   async download() {
     await this.initialized;
+    if (!this.preferencesValid) throw new Error(this.preferenceWarning);
     if (!this.release?.asset || !this.release?.checksumAsset) throw new Error('This release does not have a verified package for your device.');
     if (this.downloaded) return this.snapshot();
     if (!await this.ownsCache()) throw new Error('The update cache changed. Restart the app before downloading again.');
@@ -324,10 +339,10 @@ class UpdateManager {
   async install() {
     await this.initialized; this.assertIdle(); if (!this.downloaded) throw new Error('A verified update is not ready to install.');
     this.state.installation = await this.identify(this); if (!this.state.installation.available) throw new Error(this.state.installation.reason);
-    const controller = this.begin('preparing'); const downloaded = this.downloaded, installation = this.state.installation; let staging, helper;
+    const controller = this.begin('preparing'); const downloaded = this.downloaded, installation = this.state.installation; let staging, helper, installId;
     try {
       await this.verifyDownload();
-      const id = crypto.randomUUID(), parent = path.dirname(installation.target); staging = path.join(parent, '.shelfdock-update-' + id); let staged;
+      const id = installId = crypto.randomUUID(), parent = path.dirname(installation.target); staging = path.join(parent, '.shelfdock-update-' + id); let staged;
       if (this.platform === 'win32') { await fs.mkdir(staging, { mode: 0o700 }); staged = path.join(staging, this.edition.productName + '.exe'); await fs.copyFile(downloaded.file, staged, require('node:fs').constants.COPYFILE_EXCL); }
       else {
         const root = this.platform === 'darwin' ? this.edition.productName + '.app' : `${this.edition.prefix}-${downloaded.version}-linux-${this.arch}`;
@@ -338,16 +353,16 @@ class UpdateManager {
       this.assertIdle(); const current = await this.identify(this);
       if (!current.available || current.target !== installation.target || current.identity !== installation.identity) throw new Error('The installation changed while the update was prepared.');
       const backup = path.join(parent, '.shelfdock-backup-' + id + (this.platform === 'win32' ? '.exe' : this.platform === 'darwin' ? '.app' : ''));
-      const ready = path.join(this.directory, 'ready-' + id), result = path.join(this.directory, 'result-' + id + '.json');
-      const plan = { id, pid: process.pid, target: installation.target, staged, backup, result, ready, version: downloaded.version, sha256: downloaded.sha256, platform: this.platform, identity: installation.identity };
+      const ready = path.join(this.directory, 'ready-' + id), started = path.join(this.directory, 'started-' + id), result = path.join(this.directory, 'result-' + id + '.json');
+      const plan = { id, pid: process.pid, target: installation.target, staged, backup, result, ready, started, version: downloaded.version, sha256: downloaded.sha256, platform: this.platform, identity: installation.identity };
       let executable, args, options = { detached: true, stdio: 'ignore', windowsHide: true };
       if (this.platform === 'win32') {
         plan.oldHash = await hashFile(installation.target); const script = path.join(this.directory, 'apply-' + id + '.ps1'), planFile = path.join(this.directory, 'plan-' + id + '.json');
         await fs.writeFile(script, WINDOWS_HELPER, { flag: 'wx', mode: 0o600 }); await writeJSON(planFile, plan); executable = 'powershell.exe'; args = ['-NoProfile', '-NonInteractive', '-File', script, '-Plan', planFile];
       } else {
-        const script = path.join(this.directory, 'apply-' + id + '.sh'); await fs.writeFile(script, POSIX_HELPER, { flag: 'wx', mode: 0o700 }); executable = '/bin/sh'; args = [script, String(plan.pid), plan.target, plan.staged, plan.backup, plan.result, plan.ready, plan.platform, plan.identity, this.edition.productName];
+        const script = path.join(this.directory, 'apply-' + id + '.sh'); await fs.writeFile(script, POSIX_HELPER, { flag: 'wx', mode: 0o700 }); executable = '/bin/sh'; args = [script, String(plan.pid), plan.target, plan.staged, plan.backup, plan.result, plan.ready, plan.platform, plan.identity, this.edition.productName, plan.started];
       }
-      await writeJSON(path.join(this.directory, 'install.json'), { id, repository: this.edition.repository, version: downloaded.version, backup });
+      await writeJSON(path.join(this.directory, 'install.json'), { id, repository: this.edition.repository, version: downloaded.version, backup, started });
       const child = this.spawnProcess(executable, args, options); helper = child; let failure; child.once('error', error => { failure = error; }); child.unref();
       for (let i = 0; i < 50; i++) { if (failure) throw failure; try { if ((await fs.readFile(ready, 'utf8')).includes('ready')) break; } catch {} if (i === 49) throw new Error('The update helper could not start. This app is still running.'); await new Promise(resolve => setTimeout(resolve, 50)); }
       try { this.assertIdle(); } catch (error) { child.kill(); throw error; }
@@ -355,12 +370,37 @@ class UpdateManager {
     } catch (error) {
       helper?.kill();
       if (staging) await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+      if (installId) for (const name of ['install.json', 'ready-' + installId, 'started-' + installId, 'result-' + installId + '.json', 'apply-' + installId + '.sh', 'apply-' + installId + '.ps1', 'plan-' + installId + '.json']) await fs.rm(path.join(this.directory, name), { force: true }).catch(() => {});
       this.state.status = this.downloaded ? 'downloaded' : this.release ? 'available' : 'idle'; this.state.error = safeMessage(error); this.emit(); throw error;
     } finally { if (this.controller === controller) this.controller = null; }
   }
+  async confirmStartup() {
+    await this.initialized;
+    const pending = this.pendingInstall;
+    if (!pending || pending.version !== this.version || pending.repository !== this.edition.repository) return this.snapshot();
+    if (!await this.ownsCache()) throw new Error('The update confirmation record is not in its original updater cache.');
+    const marker = path.join(this.directory, 'started-' + pending.id);
+    await fs.writeFile(marker, JSON.stringify({ id: pending.id, version: this.version }), { flag: 'wx', mode: 0o600 });
+    // The helper commits success only after observing the ready marker. Until then
+    // retain the journal so an interrupted or failed helper remains recoverable.
+    const resultFile = path.join(this.directory, 'result-' + pending.id + '.json');
+    let committed = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      let result; try { result = await readJSON(resultFile, 8192); } catch {}
+      if (result?.status === 'installed') { committed = true; break; }
+      if (result && result.status !== 'installed') throw new Error('The update helper did not confirm installation.');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (!committed) return this.snapshot();
+    for (const name of ['install.json', 'result-' + pending.id + '.json', 'ready-' + pending.id, 'started-' + pending.id]) await fs.rm(path.join(this.directory, name), { force: true });
+    this.state.result = { status: 'installed', version: this.version, backupRetained: pending.backupRetained };
+    this.pendingInstall = null;
+    this.emit();
+    return this.snapshot();
+  }
   schedule() {
     clearTimeout(this.timer); this.timer = null;
-    if (!this.enabled || !this.started || this.disposed || !this.preferences.autoCheck) return;
+    if (!this.enabled || !this.started || this.disposed || !this.preferencesValid || !this.preferences.autoCheck) return;
     const remaining = this.state.lastChecked ? Math.max(15000, INTERVAL - (this.clock() - this.state.lastChecked)) : 15000;
     this.timer = setTimeout(async () => {
       try { if (!ACTIVE.has(this.state.status) && !this.isBusy()) await this.check(); } catch {}

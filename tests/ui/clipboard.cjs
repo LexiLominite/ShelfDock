@@ -143,6 +143,42 @@ const fresh = async (app, mode, run) => {
     });
 
     await fresh(app, 'large', async page => {
+      await openClipboard(page);
+      await page.getByRole('button', { name: 'Clipboard preferences', exact: true }).click();
+      await page.waitForFunction(() => document.querySelector('.clipboard-editor')?.contains(document.activeElement));
+      await page.evaluate(() => {
+        document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        document.querySelector('[aria-label="Search clipboard history"]').focus();
+      });
+      // Let the scheduled restoration run after a deliberate newer focus choice.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.getByRole('dialog', { name: 'Clipboard history preferences' }).waitFor({ state: 'detached' });
+      await expectFocus(page.getByRole('textbox', { name: 'Search clipboard history' }));
+      await page.getByText('Paused while editing', { exact: true }).waitFor();
+      assert.equal(await countCalls(page, 'hideWindow'), 0);
+      assert.equal(await countCalls(page, 'captureClipboardHistory'), 0);
+      console.log('PASS Clipboard deferred restoration preserves newer editing focus and pause');
+    });
+
+    await fresh(app, 'large', async page => {
+      await openClipboard(page);
+      await page.getByRole('button', { name: 'Clipboard preferences', exact: true }).click();
+      const preferences = page.getByRole('dialog', { name: 'Clipboard history preferences' });
+      await preferences.waitFor();
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
+      const settings = page.getByRole('dialog', { name: 'ShelfDock settings', exact: true });
+      await settings.waitFor();
+      await page.keyboard.press('Escape');
+      await settings.waitFor({ state: 'detached' });
+      assert.equal(await preferences.isVisible(), true, 'Topmost Settings owns Escape while clipboard preferences remain underneath');
+      await page.keyboard.press('Escape');
+      await preferences.waitFor({ state: 'detached' });
+      await expectFocus(page.getByRole('button', { name: 'Clipboard preferences', exact: true }));
+      assert.equal(await countCalls(page, 'hideWindow'), 0, 'Each Escape closes only its topmost dialog');
+      console.log('PASS Clipboard preferences yield Escape to topmost Settings');
+    });
+
+    await fresh(app, 'large', async page => {
       await page.evaluate(() => {
         window.__pendingDetails = {};
         window.drift.getClipboardEntry = id => {
@@ -165,6 +201,33 @@ const fresh = async (app, mode, run) => {
       await page.getByRole('button', { name: 'Copied', exact: true }).waitFor();
       assert.deepEqual(await page.evaluate(() => window.__calls.find(call => call.method === 'copyClipboardEntry').value), { id: 'clip-1', plainText: false });
       console.log('PASS Clipboard stale detail isolation and loading/copy race guard');
+    });
+
+    await fresh(app, 'large', async page => {
+      await page.evaluate(() => {
+        window.__clips.settings.enabled = false;
+        const update = window.drift.updateClipboardPreferences;
+        window.drift.updateClipboardPreferences = async patch => {
+          const next = await update(patch);
+          return new Promise(resolve => { window.__releaseClipboardPreference = () => resolve(next); });
+        };
+      });
+      await openClipboard(page);
+      await page.getByRole('button', { name: 'Enable history…', exact: true }).click();
+      await page.getByRole('button', { name: 'Turn on clipboard history', exact: true }).click();
+      await page.waitForFunction(() => typeof window.__releaseClipboardPreference === 'function');
+      await page.waitForFunction(() => document.activeElement === document.body);
+      await page.keyboard.press('Escape');
+      await page.getByRole('dialog', { name: 'Clipboard history preferences' }).waitFor({ state: 'detached' });
+      await expectFocus(page.getByRole('listbox', { name: 'Clipboard history' }));
+      assert.equal(await countCalls(page, 'hideWindow'), 0, 'Escape stays local after a pending action loses control focus');
+      await page.evaluate(() => window.__releaseClipboardPreference());
+      await page.getByText('Recording locally', { exact: true }).waitFor();
+      await page.getByRole('textbox', { name: 'Search clipboard history' }).focus();
+      await page.getByText('Paused while editing', { exact: true }).waitFor();
+      assert.equal(await countCalls(page, 'captureClipboardHistory'), 0);
+      assert.equal(await countCalls(page, 'captureClipboard'), 0);
+      console.log('PASS Clipboard pending preference Escape closes locally and restores usable focus');
     });
 
     await fresh(app, 'large', async page => {

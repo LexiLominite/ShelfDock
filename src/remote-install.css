@@ -1,0 +1,92 @@
+.remote-install-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.remote-install-help {
+  font-size: 13px;
+  color: var(--text-muted, #666);
+  line-height: 1.4;
+}
+
+.remote-install-review dl {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 8px 16px;
+  font-size: 13px;
+  margin: 16px 0;
+  padding: 12px;
+  background: var(--bg-hover, #f5f5f5);
+  border-radius: 6px;
+}
+
+.remote-install-review dt {
+  color: var(--text-muted, #666);
+  font-weight: 500;
+}
+
+.remote-install-review dd {
+  margin: 0;
+  color: var(--text-primary, #333);
+  word-break: break-all;
+}
+
+.remote-install-exact {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.remote-install-progress {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg-hover, #f5f5f5);
+  border-radius: 6px;
+}
+
+.remote-install-progress .spinning {
+  animation: remote-install-spin 1s linear infinite;
+  color: var(--text-muted, #666);
+}
+
+.remote-install-progress p {
+  margin: 4px 0 0 0;
+  font-size: 13px;
+  color: var(--text-muted, #666);
+}
+
+.remote-install-complete {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  background: var(--bg-success-light, #e6f4ea);
+  border: 1px solid var(--border-success, #ceead6);
+  border-radius: 6px;
+  color: var(--text-success, #137333);
+}
+
+.remote-install-complete p {
+  margin: 4px 0 0 0;
+  font-size: 13px;
+  color: var(--text-success-muted, #0d5322);
+}
+
+.remote-install-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-error-light, #fce8e6);
+  border: 1px solid var(--border-error, #fad2cf);
+  border-radius: 6px;
+  color: var(--text-error, #c5221f);
+  font-size: 13px;
+}
+
+@keyframes remote-install-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

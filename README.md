@@ -66,15 +66,23 @@ The app checks actual SSH command access, not only Tailscale online status. Read
 
 Imported SSH aliases retain their configured connection behavior. Manual machines need an address, SSH username, port, and optionally a local private-key path. Keys remain in your existing SSH folder; ShelfDock stores only their paths. Use the same SSH login that already works in your terminal. For a new server, connect in your terminal and verify its fingerprint before checking it in ShelfDock. The app never disables host-key checking.
 
-## Install the app on another Mac
+## Install the app on another device
 
-From an installed, packaged macOS app, open a machine’s **⋯ → Install on this device…** menu. The dialog explains that installation currently supports Macs only and keeps the clicked device selected. Select **Check Mac** to review its account, address, processor, version and destination. The destination must be macOS with the same architecture as the sending app; the current Mac release is Apple Silicon. This flow does not create arbitrary hosts or install Windows/Linux packages. Normal transfers remain available across supported desktop platforms.
+Open a saved machine’s **⋯ → Install on this device…** menu, then **Check Machine**. Review its detected system, processor, version and user-account destination before confirming. Linux supports x64/ARM64; Windows supports x64 portable apps. Installing onto a Mac uses the existing matching-architecture Mac bundle and requires a packaged Mac sender. Plans expire after five minutes, can be used once, and are invalidated when the saved connection changes.
 
-Confirm the reviewed plan to send only this app bundle to the destination account's `~/Applications` folder. The preview expires after five minutes and can be used once. SSH trust and credentials come from the existing saved route; no new password or host-key bypass is introduced. A personal edition requires a separate acknowledgement that its bundled machine preset will be included. Local clipboard history, shelf data, passwords, private keys and the sender's application profile are not copied.
+The public edition downloads verified ShelfDock assets anonymously from the fixed release repository. The private edition downloads LexBridge assets through authentication on the sender and requires separate consent to copy its bundled personal machine preset. Credentials, local clipboard history, shelves, runtime settings and private keys are never copied. The installer verifies package identity and SHA-256, refuses an existing app destination and leaves the new app closed. Cancel a compatibility check or transfer before the final installation commit. See [remote installation](docs/remote-install.md) for paths, recovery and native validation limits. Public non-interactive [bootstrap scripts](docs/bootstrap.md) use curl or wget on Linux and PowerShell on Windows, and require published version-matched assets.
 
-The installer rechecks the saved endpoint, app bundle and destination, verifies the uploaded archive's SHA-256 and app identity/version, and refuses to replace an existing destination app. It preserves bundle metadata, reports progress and any staging cleanup that still needs attention, and leaves the installed app closed. Open it yourself on the receiving Mac when ready; existing OS security prompts still apply. This is a first-install convenience, not an automatic updater or a way to enable Remote Login. Existing installations should be updated manually.
+## Remote screens
 
-The flow has no completed live remote-install validation yet. Native macOS-to-macOS installation remains a release-test requirement; packaged Windows/Linux sender and receiver validation remains separate.
+Choose **Remote screen…** from a machine’s menu to view its existing desktop through trusted SSH. The bundled noVNC viewer starts in View mode; choose Control explicitly, use Fit or Fullscreen, then Disconnect when finished. The native bridge listens only on local loopback and uses temporary single-session access. Screen sharing does not enable Clipboard tools or clipboard sync.
+
+macOS needs already-enabled Screen Sharing. Supported Ubuntu/Debian X11 sessions can review temporary x11vnc sharing setup; unsupported sessions report their prerequisite. Existing Windows VNC servers have a connection path, but automatic TightVNC provisioning remains disabled pending native Windows qualification. See [remote desktop](docs/remote-desktop.md). These paths require native release testing before production support is claimed.
+
+## Version 0.7 release candidate
+
+This source retains the version 0.6 clipboard sync protocol and adds remote desktop, broader reviewed installation and updater startup recovery. Clipboard tools and sync remain off by default. New installations check and download updates automatically; existing saved choices remain unchanged. Restart and installation always require an explicit idle-time action. Previous app versions are retained for recovery.
+
+Local candidate packages are unsigned previews. Building a package or passing simulated transport tests does not establish native clipboard, remote-install, VNC or updater compatibility on every operating system. Production qualification and publication are tracked separately from source validation.
 
 ## What each device needs
 

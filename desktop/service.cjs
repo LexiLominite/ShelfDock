@@ -172,7 +172,7 @@ class DriftService {
     }); await this.writeChain;
   }
   async getState() { await this.initialized; await this.passwordAuth.initialized; return this.decoratedState(); }
-  assertConfigurationIdle() { if (this.appUpdating) throw new Error('Wait for the app update to finish.'); if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); if (this.configurationSaving) throw new Error('Wait for machine settings to finish saving.'); }
+  assertConfigurationIdle() { if (this.appUpdating) throw new Error('Wait for the app update to finish.'); if (this.remoteInstallation) throw new Error('Wait for remote installation to finish.'); if (this.remoteDesktopSetup) throw new Error('Wait for remote desktop setup to finish.'); if (this.macInstallation) throw new Error('Wait for Mac installation to finish.'); if (this.tunnelSetup) throw new Error('Wait for port forwarding setup to finish.'); if (this.authenticationSetup) throw new Error('Wait for machine access setup to finish.'); if (this.configurationImport) throw new Error('Wait for configuration import to finish.'); if (this.configurationSaving) throw new Error('Wait for machine settings to finish saving.'); }
   mutateShelf(operation) {
     const next = this.shelfMutation.catch(() => {}).then(async () => {
       await this.initialized;

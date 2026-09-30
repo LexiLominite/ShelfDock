@@ -43,7 +43,7 @@ async function controller(options = {}) {
     setMinimumSize() {}
     setPosition(x, y) { this.bounds.x = x; this.bounds.y = y; }
     setVisibleOnAllWorkspaces() {}
-    async loadFile(file) { this.loadedFile = file; }
+    async loadFile(file) { this.loadedFile = file; record('windowLoaded', file); }
   }
   class FakeTray extends EventEmitter {
     constructor() { super(); trays.push(this); }
@@ -81,7 +81,7 @@ async function controller(options = {}) {
     async refreshHosts() { return this.state; }
     async probeHosts() { return this.state; }
   }
-  let workerOptions, historyOptions, fakeTunnels;
+  let workerOptions, historyOptions, fakeTunnels, fakeDesktop, fakeInstaller;
   const modules = {
     '../package.json': { productName: options.productName || 'ShelfDock', version: '0.4.1' },
     electron,
@@ -95,8 +95,10 @@ async function controller(options = {}) {
     './migrate.cjs': { migrateLegacyData: async () => undefined },
     './tunnels.cjs': { TunnelManager: class { constructor() { fakeTunnels = this; this.state = { active: options.activeTunnels || [], history: [] }; this.initialized = Promise.resolve(); } get active() { return new Map(this.state.active.map(view => [view.id, { view: { ...view, hostId: siteHost.id }, endpoint: endpointKey(siteHost) }])); } snapshot() { return this.state; } async getState() { return this.state; } async stop(id) { record('tunnelStop', id); this.state.active = this.state.active.filter(tunnel => tunnel.id !== id); } async shutdown() { record('tunnelsShutdown'); } } },
     './mac-installer.cjs': { MacInstaller: class { constructor(args) { this.args = args; record('macInstallerCreated', args.platform, args.sourceApp); } getState() { return { available: this.args.platform === 'darwin' && this.args.isPackaged, operation: null }; } async preview(request) { record('macPreview', request); return { id: 'fictional-plan' }; } async install(request) { record('macInstall', request); return this.getState(); } async shutdown() { record('macInstallerShutdown'); await options.installerShutdown; } } },
+    './remote-desktop.cjs': { RemoteDesktop: class { constructor(args) { this.args = args; this.session = options.remoteSession || null; fakeDesktop = this; record('desktopCreated', args.allowedOrigins); } getState() { return { session: this.session }; } async inspect(request) { record('desktopInspect', request); await options.desktopInspection; return { available: true }; } async previewSetup(request) { record('desktopPreview', request); return { id: 'desktop-plan' }; } async apply(request) { record('desktopApply', request); return this.getState(); } async start(request) { record('desktopStart', request); this.session = { id: 'desktop-session', status: 'waiting' }; return { session: this.session }; } async stop(request) { record('desktopStop', request); this.session = null; return this.getState(); } async shutdown() { record('desktopShutdown'); await options.desktopShutdown; } } },
+    './remote-installer.cjs': { RemoteInstaller: class { constructor(args) { this.args = args; fakeInstaller = this; record('remoteInstallerCreated', args.edition); } getState() { return { available: true, operation: null }; } async preview(request) { record('remotePreview', request); return { id: 'remote-plan' }; } async install(request) { record('remoteInstall', request); return this.getState(); } async cancel(request) { record('remoteCancel', request); return this.getState(); } async shutdown() { record('remoteInstallerShutdown'); await options.remoteInstallerShutdown; } } },
     './received.cjs': { ReceivedManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('receivedCreated', args.enabled); } async getState() { return { received: [], unreadCount: 0 }; } async refresh() { record('receivedRefresh'); return this.getState(); } async markRead(value) { record('receivedRead', value); return this.getState(); } async openFolder(value) { record('receivedOpen', value); return this.getState(); } async addToShelf(value) { record('receivedShelf', value); return initialState; } start() { record('receivedStart'); } stop() { record('receivedStop'); } } },
-    './updates.cjs': { UpdateManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('updatesCreated', args.enabled); } snapshot() { return { status: 'idle', version: '0.5.0' }; } async getState() { return this.snapshot(); } async check() { record('updatesCheck'); return this.getState(); } async install() { if (this.args.isBusy()) throw new Error('Finish active work first.'); this.args.onChange({status:'installing'}); record('updatesInstall'); } start() { record('updatesStart'); } shutdown() { record('updatesShutdown'); } } },
+    './updates.cjs': { UpdateManager: class { constructor(args) { this.args = args; this.initialized = Promise.resolve(); record('updatesCreated', args.enabled); } snapshot() { return { status: 'idle', version: '0.5.0' }; } async getState() { return this.snapshot(); } async check() { record('updatesCheck'); return this.getState(); } async install() { if (this.args.isBusy()) throw new Error('Finish active work first.'); this.args.onChange({status:'installing'}); record('updatesInstall'); } async confirmStartup() { record('startupConfirmed'); } start() { record('updatesStart'); } shutdown() { record('updatesShutdown'); } } },
     './tunnel-site.cjs': { ...require('../desktop/tunnel-site.cjs'), verifyTunnelSite: async (url, recordValue) => { record('verifyTunnelSite', url); if (options.siteProbe) await options.siteProbe(url, recordValue); if (options.siteProbeError) throw new Error(options.siteProbeError); } },
     './clipboard-sync.cjs': { ClipboardSync: class {
       constructor() { record('clipboardSyncCreated'); this.ready = Promise.resolve(); }
@@ -155,7 +157,7 @@ async function controller(options = {}) {
     assert.ok(poll, 'normal operation installs cursor sampling');
     for (const x of [0, 50, 130, 50, 0, 60, 140, 60, 0, 60, 150]) { clock += 32; cursor = { x: 300 + x, y: 200 }; poll.callback(); }
   };
-  return { app, calls, windows, trays, timers, shortcuts, handlers, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, tunnels: fakeTunnels, advance: milliseconds => { clock += milliseconds; } };
+  return { app, calls, windows, trays, timers, shortcuts, handlers, errors, invoke, shake, workerOptions, historyOptions, service: fakeService, tunnels: fakeTunnels, desktop: fakeDesktop, installer: fakeInstaller, advance: milliseconds => { clock += milliseconds; } };
 }
 
 test('actual controller shows on a shake and hides on a later shake while respecting cooldown', async () => {
@@ -469,4 +471,45 @@ test('packaged public edition does not read or apply a personal preset', async (
   const c = await controller({ packaged: true, productName: 'ShelfDock', argv: ['--background'] });
   assert.equal(c.errors.length, 0, 'public startup never touches guarded preset filesystem');
   assert.equal(c.windows.length, 1);
+});
+
+
+test('startup confirmation follows loaded renderer and packaged editions keep installer feeds separate', async () => {
+  const clean = await controller({ packaged: true, productName: 'ShelfDock' });
+  assert.equal(clean.installer.args.edition, 'clean');
+  assert.deepEqual(Array.from(clean.desktop.args.allowedOrigins), ['null']);
+  assert.equal(clean.calls.some(call => call.type === 'startupConfirmed'), false, 'Native window load alone is not renderer health');
+  await clean.invoke('confirmRendererReady');
+  assert.ok(clean.calls.findIndex(call => call.type === 'startupConfirmed') > clean.calls.findIndex(call => call.type === 'windowLoaded'));
+  const privateApp = await controller({ productName: 'LexBridge' });
+  assert.equal(privateApp.installer.args.edition, 'personal');
+  const silent = await controller({ env: { LEX_DRIFT_BACKGROUND_TEST: '1' } });
+  assert.equal(silent.calls.some(call => call.type === 'startupConfirmed'), false);
+});
+
+test('remote setup preserves status and stop paths but blocks configuration, transfers and updates', async () => {
+  const c = await controller();
+  for (const flag of ['remoteInstallation', 'remoteDesktopSetup']) {
+    c.service[flag] = true;
+    for (const method of ['saveHost', 'send', 'installUpdate', 'captureClipboard', 'refreshHosts']) await assert.rejects(c.invoke(method, {}), /remote.*finish/);
+    await c.invoke('getState'); await c.invoke('getRemoteInstallState'); await c.invoke('getRemoteDesktopState');
+    await c.invoke('cancelRemoteInstall', {}); await c.invoke('stopRemoteDesktop', {}); await c.invoke('setInteraction', { editing: false });
+    c.service[flag] = false;
+  }
+  c.desktop.session = { id: 'desktop-live', status: 'connected' };
+  await assert.rejects(c.invoke('installUpdate'), /Finish active work/);
+  await c.invoke('stopRemoteDesktop', { id: 'desktop-live' });
+  await c.invoke('installUpdate');
+});
+
+test('desktop inspection holds the configuration guard until it settles and native requests reject foreign windows', async () => {
+  let resolveInspection;
+  const c = await controller({ desktopInspection: new Promise(resolve => { resolveInspection = resolve; }) });
+  const work = c.invoke('inspectRemoteDesktop', { hostId: 'fixture' });
+  await flush();
+  assert.equal(c.service.remoteDesktopSetup, true);
+  await assert.rejects(c.invoke('saveHost', {}), /remote desktop setup/);
+  resolveInspection(); await work;
+  assert.equal(c.service.remoteDesktopSetup, false);
+  for (const method of ['inspectRemoteDesktop', 'previewRemoteInstall', 'installRemotely', 'cancelRemoteInstall', 'confirmRendererReady']) await assert.rejects(c.handlers.get('drift:' + method)({ sender: {}, senderFrame: { url: 'file:///elsewhere' } }, {}), /did not come from/);
 });

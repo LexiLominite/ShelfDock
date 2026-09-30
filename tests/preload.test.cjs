@@ -44,3 +44,12 @@ test('preload forwards a targeted host probe and leaves no-argument probes globa
   assert.equal(calls[1].channel, 'drift:probeHosts');
   assert.ok(calls[1].args.every(argument => argument === undefined), 'a global probe receives no host selection');
 });
+
+
+test('preload exposes reviewed remote operations through fixed IPC channels', async () => {
+  const { api, calls } = loadPreload();
+  for (const method of ['getRemoteDesktopState', 'inspectRemoteDesktop', 'previewRemoteDesktopSetup', 'applyRemoteDesktopSetup', 'startRemoteDesktop', 'stopRemoteDesktop', 'getRemoteInstallState', 'previewRemoteInstall', 'installRemotely', 'cancelRemoteInstall', 'confirmRendererReady']) {
+    await api[method]({ hostId: 'saved-device', planId: 'single-use-plan' });
+    assert.equal(calls.at(-1).channel, 'drift:' + method);
+  }
+});

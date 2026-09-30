@@ -7,7 +7,9 @@ const fs = require('node:fs/promises');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execute = promisify(execFile);
 const { Server, utils } = require('ssh2');
 const { ClipboardSync } = require('../desktop/clipboard-sync.cjs');
 const { connectSsh } = require('../desktop/clipboard-sync-ssh.cjs');
@@ -43,12 +45,24 @@ const listen = server => new Promise((resolve, reject) => {
 
 test('clipboard sync pairs and exchanges text and PNG both ways over an owned real OpenSSH tunnel', { skip: process.platform === 'win32', timeout: 30000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'shelfdock-sync-ssh-'));
+  let cleanupResources = async () => {};
+  t.after(async () => { try { await cleanupResources(); } finally { await fs.rm(directory, { recursive: true, force: true }); } });
   const clientHome = path.join(directory, 'isolated-home');
   await fs.mkdir(clientHome, { recursive: true, mode: 0o700 });
-  const hostKey = utils.generateKeyPairSync('ed25519');
-  const userKey = utils.generateKeyPairSync('ed25519');
-  const identityFile = path.join(directory, 'fixture-client-key');
-  await fs.writeFile(identityFile, userKey.private, { mode: 0o600 });
+  // Generate genuine OpenSSH keys once; ssh2's generator can truncate leading
+  // zero bytes in Ed25519 public keys and create malformed fixtures.
+  const makeKey = async name => {
+    const file = path.join(directory, name);
+    await execute('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'loopback-fixture', '-f', file], { timeout: 5000 });
+    const privateKey = await fs.readFile(file, 'utf8');
+    const publicKey = (await fs.readFile(file + '.pub', 'utf8')).trim();
+    assert.equal(utils.parseKey(privateKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 private key');
+    assert.equal(utils.parseKey(publicKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 public key');
+    return { private: privateKey, public: publicKey, file };
+  };
+  const hostKey = await makeKey('fixture-host-key');
+  const userKey = await makeKey('fixture-client-key');
+  const identityFile = userKey.file;
 
   const clients = new Set();
   const channels = new Set();
@@ -85,7 +99,7 @@ test('clipboard sync pairs and exchanges text and PNG both ways over an owned re
 
   let sender;
   let receiver;
-  const cleanup = async () => {
+  cleanupResources = async () => {
     await Promise.allSettled([sender?.shutdown(), receiver?.shutdown()]);
     for (const child of children) { try { child.kill('SIGTERM'); } catch {} }
     const closeDeadline = Date.now() + 2000;
@@ -98,9 +112,7 @@ test('clipboard sync pairs and exchanges text and PNG both ways over an owned re
     for (const socket of forwardedSockets) socket.destroy();
     for (const client of clients) client.destroy();
     await new Promise(resolve => listener.close(resolve));
-    await fs.rm(directory, { recursive: true, force: true });
   };
-  t.after(cleanup);
 
   const trustPinnedSpawn = (command, args, options) => {
     const child = spawn(command, [

@@ -12,10 +12,23 @@ const execute = promisify(execFile);
 
 test('loopback SSH verifies hashed trust, password login, public-key installation, and actual key-only OpenSSH login', { skip: process.platform === 'win32', timeout: 20000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dropharbor-loopback-test-'));
+  let cleanupResources = async () => {};
+  t.after(async () => { try { await cleanupResources(); } finally { await fs.rm(directory, { recursive: true, force: true }); } });
   const remoteHome = path.join(directory, 'receiver'); await fs.mkdir(path.join(remoteHome, '.ssh'), { recursive: true, mode: 0o700 });
   const authorized = path.join(remoteHome, '.ssh', 'authorized_keys'); const existing = '# unrelated existing authorized-key entry\n';
   await fs.writeFile(authorized, existing, { mode: 0o600 });
-  const serverKey = utils.generateKeyPairSync('ed25519'); const clients = new Set(); const authentications = [];
+  // Generate genuine OpenSSH keys once; ssh2's generator can truncate leading
+  // zero bytes in Ed25519 public keys and create malformed fixtures.
+  const makeKey = async name => {
+    const file = path.join(directory, name);
+    await execute('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'loopback-fixture', '-f', file], { timeout: 5000 });
+    const privateKey = await fs.readFile(file, 'utf8');
+    const publicKey = (await fs.readFile(file + '.pub', 'utf8')).trim();
+    assert.equal(utils.parseKey(privateKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 private key');
+    assert.equal(utils.parseKey(publicKey) instanceof Error, false, 'ssh2 must accept a genuine OpenSSH Ed25519 public key');
+    return { private: privateKey, public: publicKey, file };
+  };
+  const serverKey = await makeKey('fixture-host-key'); const clients = new Set(); const authentications = [];
   const server = new Server({ hostKeys: [serverKey.private] }, client => {
     clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client));
     client.on('authentication', context => {
@@ -42,7 +55,7 @@ test('loopback SSH verifies hashed trust, password login, public-key installatio
     }));
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
-  t.after(async () => { for (const client of clients) client.destroy(); await new Promise(resolve => server.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
+  cleanupResources = async () => { for (const client of clients) client.destroy(); await new Promise(resolve => server.close(resolve)); };
   const port = server.address().port; const known = path.join(directory, 'known_hosts');
   await fs.writeFile(known, `[127.0.0.1]:${port} ${serverKey.public}\n`);
   await execute('ssh-keygen', ['-H', '-f', known]);

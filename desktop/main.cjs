@@ -16,6 +16,8 @@ const { TunnelManager } = require('./tunnels.cjs');
 const { MacInstaller } = require('./mac-installer.cjs');
 const { ReceivedManager } = require('./received.cjs');
 const { UpdateManager } = require('./updates.cjs');
+const { RemoteDesktop } = require('./remote-desktop.cjs');
+const { RemoteInstaller } = require('./remote-installer.cjs');
 const { tunnelSiteURL, assertTunnelSiteEndpoint, verifyTunnelSite } = require('./tunnel-site.cjs');
 
 const { productName = 'ShelfDock', version } = require('../package.json');
@@ -26,7 +28,7 @@ const backgroundTest = process.env.LEX_DRIFT_BACKGROUND_TEST === '1';
 const startHidden = backgroundTest || process.argv.includes('--background');
 const singleton = app.requestSingleInstanceLock({ background: startHidden });
 if (!singleton) app.quit();
-let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, clipboardSync, tunnels, macInstaller, received, updates, worker, quitting = false, closingWorker = false;
+let window, tray, service, poll, refreshTimer, clipboardTimer, clipboardHistory, clipboardSync, tunnels, macInstaller, remoteDesktop, remoteInstaller, received, updates, worker, quitting = false, closingWorker = false, rendererReady = false, rendererLoaded = false, startupConfirmation;
 const PAIR_CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
 const PAIR_DIRECTIONS = new Set(['send', 'receive', 'both']);
 const SSH_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
@@ -118,12 +120,14 @@ function safeHandler(method, fn) {
     if (!window || event.sender !== window.webContents || event.senderFrame?.url !== entryURL) {
       throw new Error(`This request did not come from ${productName}.`);
     }
-    if (service?.appUpdating && !['getState', 'getUpdates', 'hideWindow', 'setInteraction'].includes(method)) throw new Error('Wait for the app update to finish.');
-    if (service?.authenticationSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for connection setup to finish.');
-    if (service?.configurationImport && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
-    if (service?.configurationSaving && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for machine settings to finish saving.');
-    if (service?.tunnelSetup && !['getState', 'getTunnels', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for forwarding setup to finish.');
-    if (service?.macInstallation && !['getState', 'getTunnels', 'getMacInstallState', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for Mac installation to finish.');
+    if (service?.appUpdating && !['getState', 'getUpdates', 'confirmRendererReady', 'hideWindow', 'setInteraction'].includes(method)) throw new Error('Wait for the app update to finish.');
+    if (service?.authenticationSetup && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for connection setup to finish.');
+    if (service?.configurationImport && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for configuration import to finish.');
+    if (service?.configurationSaving && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for machine settings to finish saving.');
+    if (service?.tunnelSetup && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'stopRemoteDesktop', 'cancelRemoteInstall', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for forwarding setup to finish.');
+    if (service?.macInstallation && !['getState', 'getTunnels', 'getMacInstallState', 'getRemoteInstallState', 'getRemoteDesktopState', 'cancelRemoteInstall', 'stopRemoteDesktop', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for Mac installation to finish.');
+    if (service?.remoteInstallation && !['getState', 'getTunnels', 'getRemoteInstallState', 'getRemoteDesktopState', 'cancelRemoteInstall', 'stopRemoteDesktop', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for remote installation to finish.');
+    if ((service?.remoteDesktopSetup || remoteDesktop?.mutating) && !['getState', 'getTunnels', 'getRemoteDesktopState', 'getRemoteInstallState', 'cancelRemoteInstall', 'stopRemoteDesktop', 'stopTunnel', 'hideWindow', 'quit', 'setInteraction'].includes(method)) throw new Error('Wait for remote desktop setup to finish.');
     return fn(...args);
   });
 }
@@ -163,22 +167,31 @@ if (singleton) app.whenReady().then(async () => {
   }
   tunnels = new TunnelManager({ dataDir: app.getPath('userData'), service, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:tunnels', state); } });
   await tunnels.initialized;
-  macInstaller = new MacInstaller({ service, sourceApp: process.platform === 'darwin' && app.isPackaged ? path.resolve(path.dirname(process.execPath), '../..') : null, platform: process.platform, arch: process.arch, version, productName, isPackaged: app.isPackaged, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:mac-install', state); } });
+  macInstaller = new MacInstaller({ service, sourceApp: process.platform === 'darwin' && app.isPackaged ? path.resolve(path.dirname(process.execPath), '../..') : null, platform: process.platform, arch: process.arch, version, productName, isPackaged: app.isPackaged, onChange: state => { if (window && !window.isDestroyed()) { window.webContents.send('drift:mac-install', state); if (remoteInstaller?.delegatingMac) window.webContents.send('drift:remote-install', remoteInstaller.getState()); } } });
   received = new ReceivedManager({ dataDir: app.getPath('userData'), desktopDir: app.getPath('desktop'), service, enabled: !backgroundTest, openPath: folder => shell.openPath(folder), onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:received', state); } });
   await received.initialized;
-  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.configurationSaving || service.tunnelSetup || service.macInstallation || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
+  remoteDesktop = new RemoteDesktop({ service, allowedOrigins: ['null'], onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:remote-desktop', state); } });
+  remoteInstaller = new RemoteInstaller({ service, productName, version, edition: ['LexBridge', 'lex-drift'].includes(productName) ? 'personal' : 'clean', macInstaller, onChange: state => { if (window && !window.isDestroyed()) window.webContents.send('drift:remote-install', state); } });
+  updates = new UpdateManager({ dataDir: app.getPath('userData'), version, platform: process.platform, arch: process.arch, personal: ['lex-drift', 'LexBridge'].includes(productName), isPackaged: app.isPackaged && !backgroundTest, enabled: !backgroundTest, execPath: process.execPath, portableExecutable: process.env.PORTABLE_EXECUTABLE_FILE, onChange: state => { service.appUpdating = ['preparing', 'installing'].includes(state.status); if (window && !window.isDestroyed()) { window.webContents.send('drift:updates', state); publish(service.state); } }, isBusy: () => !!(clipboardHistory?.busy || service.transferring || service.scanPromise || service.probePromise || service.authenticationSetup || service.configurationImport || service.configurationSaving || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || remoteDesktop?.getState().session || interaction.dragging || tunnels.snapshot().active.some(tunnel => ['starting', 'running', 'stopping'].includes(tunnel.status))), quit: async () => { await service.shelfMutation?.catch(() => {}); await clipboardHistory.queue; await service.writeChain; received.stop(); await received.operations.catch(() => {}); quitting = true; app.quit(); }, openExternal: url => shell.openExternal(url), revealFile: file => shell.showItemInFolder(file) });
   await updates.initialized;
   const initial = await service.getState();
   runtimeSettings = initial.settings;
   detector.setSensitivity(initial.settings.sensitivity);
+  const isMac = process.platform === 'darwin';
   window = new BrowserWindow({
     width: 840, height: 680, minWidth: 650, minHeight: 540,
-    frame: false, show: false, alwaysOnTop: !backgroundTest, backgroundColor: '#E8EBF6',
+    frame: false, show: false, alwaysOnTop: !backgroundTest,
+    backgroundColor: isMac ? '#00000000' : '#E8EBF6',
+    transparent: isMac,
+    vibrancy: isMac ? 'under-window' : undefined,
+    visualEffectState: isMac ? 'active' : undefined,
+    titleBarStyle: isMac ? 'hiddenInset' : undefined,
+    trafficLightPosition: isMac ? { x: 18, y: 22 } : undefined,
     title: productName, autoHideMenuBar: true, roundedCorners: true,
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
-      additionalArguments: [`--lex-drift-product-name=${productName}`],
+      additionalArguments: [`--lex-drift-product-name=${productName}`, `--lex-drift-platform=${process.platform}`],
       contextIsolation: true, nodeIntegration: false, sandbox: true,
       webSecurity: true, spellcheck: false,
     },
@@ -237,6 +250,15 @@ if (singleton) app.whenReady().then(async () => {
   for (const [method, operation] of Object.entries({ getClipboardHistory: options => clipboardHistory.getState(options), updateClipboardPreferences: patch => clipboardHistory.updatePreferences(patch), captureClipboardHistory: () => clipboardHistory.capture(), getClipboardEntry: id => clipboardHistory.detail(id), copyClipboardEntry: request => clipboardHistory.copy(request), setClipboardPinned: request => clipboardHistory.setPinned(request), removeClipboardEntry: id => clipboardHistory.remove(id), clearClipboardHistory: () => clipboardHistory.clearUnpinned(), saveClipboardSnippet: request => clipboardHistory.saveSnippet(request), addClipboardEntryToShelf: async id => decorate(await clipboardHistory.addToShelf(id, service)) })) safeHandler(method, (...args) => { if (method !== 'getClipboardHistory') clipboardHistory.requireTools(); return operation(...args); });
   for (const [method, operation] of Object.entries({ getTunnels: () => tunnels.getState(), startTunnel: request => tunnels.start(request), stopTunnel: id => tunnels.stop(id), restartTunnel: id => tunnels.restart(id), removeTunnelHistory: id => tunnels.removeHistory(id), updateTunnelNote: request => tunnels.updateNote(request) })) safeHandler(method, operation);
   for (const [method, operation] of Object.entries({ getMacInstallState: () => macInstaller.getState(), previewMacInstall: request => macInstaller.preview(request), installOnMac: request => macInstaller.install(request) })) safeHandler(method, operation);
+  const desktopOperation = async operation => { service.remoteDesktopSetup = true; try { return await operation(); } finally { service.remoteDesktopSetup = false; } };
+  for (const [method, operation] of Object.entries({ getRemoteDesktopState: () => remoteDesktop.getState(), inspectRemoteDesktop: request => desktopOperation(() => remoteDesktop.inspect(request)), previewRemoteDesktopSetup: request => desktopOperation(() => remoteDesktop.previewSetup(request)), applyRemoteDesktopSetup: request => desktopOperation(() => remoteDesktop.apply(request)), startRemoteDesktop: request => desktopOperation(() => remoteDesktop.start(request)), stopRemoteDesktop: request => remoteDesktop.stop(request) })) safeHandler(method, operation);
+  for (const [method, operation] of Object.entries({ getRemoteInstallState: () => remoteInstaller.getState(), previewRemoteInstall: request => remoteInstaller.preview(request), installRemotely: request => remoteInstaller.install(request), cancelRemoteInstall: request => remoteInstaller.cancel(request) })) safeHandler(method, operation);
+  const confirmStartupIfReady = () => {
+    if (backgroundTest || !rendererLoaded || !rendererReady) return Promise.resolve();
+    startupConfirmation ||= updates.confirmStartup().catch(() => console.warn('Update startup confirmation is pending. Recovery remains available.'));
+    return startupConfirmation;
+  };
+  safeHandler('confirmRendererReady', async () => { rendererReady = true; await confirmStartupIfReady(); });
   safeHandler('openTunnelSite', async request => {
     const state = await service.getState();
     const url = tunnelSiteURL(request, tunnels.snapshot());
@@ -294,7 +316,7 @@ if (singleton) app.whenReady().then(async () => {
   tray = new Tray(trayIcon);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: `Show ${productName}`, click: () => reveal('tray') },
-    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
+    { label: 'Refresh machines', click: () => { if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.transferring || service.appUpdating) return; service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup) ? null : service.probeHosts()).catch(console.error); reveal('tray'); } },
     { type: 'separator' },
     { label: `Quit ${productName}`, click: () => { quitting = true; app.quit(); } },
   ]));
@@ -311,7 +333,9 @@ if (singleton) app.whenReady().then(async () => {
   await window.loadFile(entry);
   if (!startHidden) reveal('launch');
   publish(await service.getState());
-  service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
+  rendererLoaded = true;
+  await confirmStartupIfReady();
+  service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   // Poll position only: never install keyboard/mouse hooks or record cursor history on disk.
   if (!backgroundTest && !(process.platform === 'linux' && (process.env.XDG_SESSION_TYPE === 'wayland' || process.env.WAYLAND_DISPLAY))) {
     poll = setInterval(() => {
@@ -323,9 +347,9 @@ if (singleton) app.whenReady().then(async () => {
   if (!backgroundTest) clipboardTimer = setInterval(() => clipboardHistory.tick().catch(() => {}), 1500);
   refreshTimer = setInterval(async () => {
     const state = await service.getState();
-    if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.transferring || service.appUpdating) return;
+    if (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup || service.transferring || service.appUpdating) return;
     if (state.history.some(receipt => receipt.status === 'sending')) return;
-    service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation) ? null : service.probeHosts({ automatic: true })).catch(console.error);
+    service.refreshHosts().then(() => (service.configurationImport || service.configurationSaving || service.authenticationSetup || service.tunnelSetup || service.macInstallation || service.remoteInstallation || service.remoteDesktopSetup) ? null : service.probeHosts({ automatic: true })).catch(console.error);
   }, 90000);
 }).catch(error => {
   console.error(error);
@@ -341,7 +365,7 @@ app.on('before-quit', event => {
   quitting = true; clearInterval(poll); clearInterval(refreshTimer); clearInterval(clipboardTimer); received?.stop(); updates?.shutdown();
   if (worker?.primary && !closingWorker) {
     event.preventDefault(); closingWorker = true;
-    Promise.resolve(clipboardSync?.shutdown()).catch(console.error).then(() => macInstaller?.shutdown()).catch(console.error).then(() => Promise.all([service?.shelfMutation?.catch(() => {}), clipboardHistory?.queue, clipboardHistory?.localSubmissions, service?.writeChain, received?.operations?.catch(() => {})])).catch(console.error).then(() => tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
+    Promise.resolve(clipboardSync?.shutdown()).catch(console.error).then(() => macInstaller?.shutdown()).catch(console.error).then(() => remoteDesktop?.shutdown()).catch(console.error).then(() => remoteInstaller?.shutdown()).catch(console.error).then(() => Promise.all([service?.shelfMutation?.catch(() => {}), clipboardHistory?.queue, clipboardHistory?.localSubmissions, service?.writeChain, received?.operations?.catch(() => {})])).catch(console.error).then(() => tunnels?.shutdown()).catch(console.error).then(() => worker.close()).catch(console.error).finally(() => app.quit());
   }
 });
 app.on('will-quit', () => { globalShortcut.unregisterAll(); worker?.close().catch(console.error); });
