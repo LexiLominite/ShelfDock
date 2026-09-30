@@ -73,7 +73,7 @@ async function controller(options = {}) {
     shell: { openPath: () => { throw new Error('No profile access is permitted in controller tests.'); }, openExternal: async url => { record('openExternal', url); if (options.openExternalError) throw new Error(options.openExternalError); } },
     clipboard: { writeText: value => record('clipboardWrite', value), read: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
   };
-  const initialState = { hosts: options.activeTunnels?.length ? [{ ...siteHost }] : [], items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
+  const initialState = { hosts: options.hosts || (options.activeTunnels?.length ? [{ ...siteHost }] : []), items: [], history: [], settings: { shakeEnabled: true, sensitivity: 'normal', viewMode: 'expanded' }, discovery: { warnings: [] }, environment: { sshAvailable: true } };
   let fakeService;
   class FakeService {
     constructor() { record('serviceCreated'); this.state = initialState; fakeService = this; }
@@ -90,6 +90,7 @@ async function controller(options = {}) {
     'node:fs/promises': new Proxy({}, { get: () => () => { throw new Error('No filesystem operations are permitted in controller tests.'); } }),
     './service.cjs': { DriftService: FakeService },
     './shake.cjs': shakeModule.exports,
+    './native-glass.cjs': { applyNativeGlass: () => { record('nativeGlassApplied'); return options.glassStatus || { mode: 'native', applied: true, supported: true, reducedTransparency: false }; }, watchAccessibility: callback => { record('appearanceWatch'); return () => record('appearanceWatchStopped'); } },
     './clipboard.cjs': { captureClipboard: () => { throw new Error('No clipboard access is permitted in controller tests.'); } },
     './config.cjs': { createConfig: () => ({}), importConfiguration: async () => initialState },
     './migrate.cjs': { migrateLegacyData: async () => undefined },
@@ -106,8 +107,10 @@ async function controller(options = {}) {
       async setEnabled(enabled) { record('clipboardSyncEnabled', enabled); }
       async setPaused() {}
       async setReceiveMode() {}
+      async refreshOwnerBootstrap() { record('ownerBootstrapRefreshed'); }
       async beginPairing() { return { code: 'ABCDEFGH', expiresAt: new Date().toISOString() }; }
       async pairWith() { return this.state(); }
+      async pairOwnedWith(request) { record('ownerClipboardConnected', request); await options.clipboardLink; return this.state(); }
       async updatePeer() {}
       async revoke() { return this.state(); }
       async submitLocal() {}
@@ -512,4 +515,58 @@ test('desktop inspection holds the configuration guard until it settles and nati
   resolveInspection(); await work;
   assert.equal(c.service.remoteDesktopSetup, false);
   for (const method of ['inspectRemoteDesktop', 'previewRemoteInstall', 'installRemotely', 'cancelRemoteInstall', 'confirmRendererReady']) await assert.rejects(c.handlers.get('drift:' + method)({ sender: {}, senderFrame: { url: 'file:///elsewhere' } }, {}), /did not come from/);
+});
+
+test('own-device clipboard connection uses the saved SSH route without a pairing code and validates direction', async () => {
+  const host = {...siteHost, sshAlias:'fixture-alias', identityFile:'/virtual/owned-key'};
+  const c = await controller({hosts:[host],clipboardToolsEnabled:true});
+  assert.equal(c.handlers.has('drift:beginClipboardPairing'),false);
+  assert.equal(c.handlers.has('drift:pairClipboardSync'),false);
+  await c.invoke('pairOwnedClipboardSync',{hostId:host.id,direction:'receive'});
+  const request=c.calls.find(call=>call.type==='ownerClipboardConnected').values[0];
+  assert.equal(request.hostLabel,host.name);assert.equal(request.direction,'receive');
+  assert.equal(request.sshTarget.alias,'fixture-alias');assert.equal(request.sshTarget.identityFile,'/virtual/owned-key');
+  assert.equal('code' in request,false);assert.equal(c.service.clipboardLinking,false);
+  await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:host.id,direction:'bad'}),/Choose send, receive, or both/);
+  await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:'absent'}),/Choose a saved machine/);
+  const off = await controller({hosts:[host]});
+  await assert.rejects(off.invoke('pairOwnedClipboardSync',{hostId:host.id}),/Enable Clipboard tools/);
+  assert.equal(off.calls.some(call=>call.type==='ownerClipboardConnected'),false);
+});
+
+test('a pending own-device link blocks conflicting edits and update restart while allowing pause and disable', async () => {
+  let finish;const pending=new Promise(resolve=>{finish=resolve;});
+  const c=await controller({hosts:[siteHost],clipboardToolsEnabled:true,clipboardLink:pending});
+  const link=c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id});await flush();
+  assert.equal(c.service.clipboardLinking,true);
+  await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id}),/device connection to finish/);
+  await assert.rejects(c.invoke('saveHost',siteHost),/device connection to finish/);
+  await assert.rejects(c.invoke('installUpdate'),/device connection to finish/);
+  await c.invoke('updateClipboardSync',{paused:true});await c.invoke('updateClipboardTools',{enabled:false});
+  finish();await link;assert.equal(c.service.clipboardLinking,false);
+  assert.ok(c.calls.some(call=>call.type==='ownerBootstrapRefreshed'));
+});
+
+test('native Mac appearance is published with solid accessibility fallback and skipped on other platforms', async () => {
+  const mac=await controller({argv:['--background']});
+  const state=await mac.invoke('getState');assert.equal(state.environment.nativeGlass.mode,'native');
+  assert.equal(mac.windows[0].options.transparent,true);assert.equal(mac.windows[0].isVisible(),false);
+  assert.ok(mac.calls.some(call=>call.type==='nativeGlassApplied'));
+  const solid=await controller({glassStatus:{mode:'solid',applied:false,supported:true,reducedTransparency:true}});
+  assert.equal((await solid.invoke('getState')).environment.nativeGlass.mode,'solid');
+  const linux=await controller({platform:'linux'});assert.equal(linux.calls.some(call=>call.type==='nativeGlassApplied'),false);
+  mac.app.emit('before-quit',{preventDefault(){}});assert.ok(mac.calls.some(call=>call.type==='appearanceWatchStopped'));
+});
+
+test('own-device connection acquires its lock before asynchronous host lookup', async () => {
+ const c=await controller({hosts:[siteHost],clipboardToolsEnabled:true});
+ const original=c.service.getState.bind(c.service);let lookup;
+ c.service.getState=()=>new Promise(resolve=>{lookup=resolve;});
+ const first=c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id});
+ assert.equal(c.service.clipboardLinking,true);
+ await assert.rejects(c.invoke('pairOwnedClipboardSync',{hostId:siteHost.id}),/device connection to finish/);
+ await assert.rejects(c.invoke('removeHost',siteHost.id),/device connection to finish/);
+ c.service.getState=original;lookup(c.service.state);await first;
+ assert.equal(c.calls.filter(call=>call.type==='ownerClipboardConnected').length,1);
+ assert.equal(c.service.clipboardLinking,false);
 });

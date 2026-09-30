@@ -374,13 +374,14 @@ class UpdateManager {
       this.state.status = this.downloaded ? 'downloaded' : this.release ? 'available' : 'idle'; this.state.error = safeMessage(error); this.emit(); throw error;
     } finally { if (this.controller === controller) this.controller = null; }
   }
-  async confirmStartup() {
+  async confirmStartup({ appearance } = {}) {
     await this.initialized;
     const pending = this.pendingInstall;
     if (!pending || pending.version !== this.version || pending.repository !== this.edition.repository) return this.snapshot();
     if (!await this.ownsCache()) throw new Error('The update confirmation record is not in its original updater cache.');
     const marker = path.join(this.directory, 'started-' + pending.id);
-    await fs.writeFile(marker, JSON.stringify({ id: pending.id, version: this.version }), { flag: 'wx', mode: 0o600 });
+    const nativeAppearance = appearance && ['native', 'vibrancy', 'solid'].includes(appearance.mode) ? { mode: appearance.mode, applied: appearance.applied === true, reducedTransparency: appearance.reducedTransparency === true } : undefined;
+    await fs.writeFile(marker, JSON.stringify({ id: pending.id, version: this.version, appearance: nativeAppearance }), { flag: 'wx', mode: 0o600 });
     // The helper commits success only after observing the ready marker. Until then
     // retain the journal so an interrupted or failed helper remains recoverable.
     const resultFile = path.join(this.directory, 'result-' + pending.id + '.json');

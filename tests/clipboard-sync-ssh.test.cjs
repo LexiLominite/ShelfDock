@@ -26,6 +26,11 @@ test('SSH arguments keep strict trust, disable inherited forwarding, and bound l
   const args = buildSshArgs({ alias: 'studio', identityFile: '/tmp/fixture key' });
   assert.deepEqual(args, [
     '-o', 'BatchMode=yes',
+    '-o', 'PreferredAuthentications=publickey',
+    '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no',
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPath=none',
     '-o', 'StrictHostKeyChecking=yes',
     '-o', 'ClearAllForwardings=yes',
     '-o', 'ServerAliveInterval=15',
@@ -39,6 +44,11 @@ test('SSH arguments keep strict trust, disable inherited forwarding, and bound l
   ]);
   assert.deepEqual(buildSshArgs({ user: 'fixture', host: '127.0.0.1', port: 2202 }), [
     '-o', 'BatchMode=yes',
+    '-o', 'PreferredAuthentications=publickey',
+    '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no',
+    '-o', 'ControlMaster=no',
+    '-o', 'ControlPath=none',
     '-o', 'StrictHostKeyChecking=yes',
     '-o', 'ClearAllForwardings=yes',
     '-o', 'ServerAliveInterval=15',

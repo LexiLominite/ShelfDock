@@ -12,7 +12,7 @@ const { promisify } = require('node:util');
 const execute = promisify(execFile);
 const { Server, utils } = require('ssh2');
 const { ClipboardSync } = require('../desktop/clipboard-sync.cjs');
-const { connectSsh } = require('../desktop/clipboard-sync-ssh.cjs');
+const { connectSsh, readOwnerBootstrap } = require('../desktop/clipboard-sync-ssh.cjs');
 
 const PORT = 47635;
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=';
@@ -47,6 +47,8 @@ test('clipboard sync pairs and exchanges text and PNG both ways over an owned re
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'shelfdock-sync-ssh-'));
   let cleanupResources = async () => {};
   t.after(async () => { try { await cleanupResources(); } finally { await fs.rm(directory, { recursive: true, force: true }); } });
+  const remoteHome = path.join(directory, 'isolated-remote-home');
+  const remoteData = path.join(remoteHome, '.config', 'lex-drift');
   const clientHome = path.join(directory, 'isolated-home');
   await fs.mkdir(clientHome, { recursive: true, mode: 0o700 });
   // Generate genuine OpenSSH keys once; ssh2's generator can truncate leading
@@ -78,6 +80,16 @@ test('clipboard sync pairs and exchanges text and PNG both ways over an owned re
       const parsed = utils.parseKey(userKey.public);
       if (context.signature && parsed.verify(context.blob, context.signature, context.hashAlgo) !== true) return context.reject();
       context.accept();
+    });
+    client.on('session', (accept) => {
+      const session = accept(); session.on('exec', (acceptExec, _reject, info) => {
+        assert.match(info.command, /^sh -c /);
+        const channel = acceptExec();
+        const child = spawn('/bin/sh', ['-c', info.command], { env: { PATH: process.env.PATH, HOME: remoteHome, XDG_CONFIG_HOME: path.join(remoteHome, '.config') }, stdio: ['ignore', 'pipe', 'pipe'] });
+        children.add(child); child.stdout.pipe(channel, { end: false }); child.stderr.pipe(channel.stderr, { end: false });
+        child.once('close', code => { children.delete(child); channel.exit(code || 0); channel.end(); });
+        channel.once('close', () => { if (child.exitCode === null) child.kill('SIGTERM'); });
+      });
     });
     client.on('ready', () => client.on('tcpip', (accept, reject, info) => {
       if (info.destIP !== '127.0.0.1' || Number(info.destPort) !== PORT || !receiver?.port) return reject();
@@ -132,17 +144,18 @@ test('clipboard sync pairs and exchanges text and PNG both ways over an owned re
   sender = new ClipboardSync({
     dataDir: path.join(directory, 'sender-data'), safeStorage: storage(), platform: process.platform, port: 0,
     connect: peer => connectSsh(peer.sshTarget, trustPinnedSpawn),
+    readOwnerBootstrap: (target, options) => readOwnerBootstrap(target, { ...options, spawnProcess: trustPinnedSpawn }),
     onItem: item => received.sender.push(item),
   });
   receiver = new ClipboardSync({
-    dataDir: path.join(directory, 'receiver-data'), safeStorage: storage(), platform: process.platform, port: 0,
+    dataDir: remoteData, safeStorage: storage(), platform: process.platform, port: 0,
     onItem: item => received.receiver.push(item),
   });
   await Promise.all([sender.ready, receiver.ready]);
   await Promise.all([sender.setEnabled(true), receiver.setEnabled(true)]);
-  const pairing = await receiver.beginPairing();
-  await sender.pairWith({
-    hostLabel: 'Loopback receiver', localLabel: 'Loopback sender', code: pairing.code, direction: 'both',
+  assert.equal(receiver.pairing, null);
+  await sender.pairOwnedWith({
+    hostLabel: 'Loopback receiver', localLabel: 'Loopback sender', direction: 'both',
     sshTarget: { user: 'fixture-user', host: '127.0.0.1', port: sshPort, identityFile },
   });
 

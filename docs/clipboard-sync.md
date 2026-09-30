@@ -1,12 +1,12 @@
 # Clipboard sync
 
-ShelfDock can pair two of its own installs and copy plain text, URLs, and PNG images between them. Sync is off until Clipboard tools are enabled and the user pairs a device. A Ready SSH machine is not paired.
+ShelfDock can connect two of your own installs and copy plain text, URLs, and PNG images between them. Clipboard tools and sync start off. Connecting requires an explicit **Connect device** action; selecting a Ready SSH machine does not connect or enable sync.
 
 ## Transport
 
-The running app listens only on `127.0.0.1:47635`. A peer reaches that port through OpenSSH `ssh -W`, using the machine's existing SSH route. SSH encrypts the connection and authenticates the host. It is not clipboard authorization.
+The running app listens only on `127.0.0.1:47635`. A peer reaches that port through OpenSSH `ssh -W`, using the machine's existing SSH route. SSH encrypts the connection and authenticates the host. For your own saved machines, **Connect device** uses trusted SSH key access to establish clipboard authorization. Both running apps must have Clipboard tools and sync enabled and resumed.
 
-After the tunnel connects, the initial handshake authenticates a pairing token created with `crypto.randomBytes` and stored with Electron `safeStorage`. The SSH private key is never read as an application secret. Connections without a valid token are closed. If secure storage is unavailable, pairing is refused and nothing is written in plaintext.
+After the tunnel connects, the initial handshake authenticates a device token created with `crypto.randomBytes` and stored with Electron `safeStorage`. The SSH private key is never read as an application secret. Connections without a valid token are closed. If secure storage is unavailable, pairing is refused and nothing is written in plaintext.
 
 There is no cloud account and no extra npm dependency. `ssh2` stays the library for the app's own SSH features. The sync tunnel starts `ssh` with `spawn` and argument arrays only; it does not invoke a shell.
 
@@ -23,8 +23,8 @@ An item older than 120 seconds is dropped. Peers do not replay history on reconn
 ## How to turn it on
 
 1. On both computers, open Settings and turn on **Clipboard tools**. Sync stays off.
-2. On the computer that should receive the first pairing, turn on **Sync between devices** and choose **Allow pairing**. Read the code aloud or copy it yourself. It expires in five minutes.
-3. On the other computer, turn on sync, choose that machine, enter the eight-character code, and choose send, receive, or both. Pairing requires sync to be enabled and unpaused on both computers.
+2. On both computers, turn on **Sync between devices** and ensure sync is resumed. Both compatible apps must remain running.
+3. On one computer, select your saved machine, choose send, receive, or both, then choose **Connect device**. Existing SSH key access establishes the device link without entering a code. Machine and direction selection never connect automatically. Settings shows **Connecting…**, then **Connected** or an actionable inline error; fix the remote app, sync, secure storage, or SSH access and retry.
 4. Choose whether incoming items are saved to clipboard history or also placed on the system clipboard. History is the default, so a sync does not replace what you have copied until you ask it to.
 5. Pause stops sync only. Revoke removes that computer. Turning Clipboard tools off stops sync and keeps local history.
 

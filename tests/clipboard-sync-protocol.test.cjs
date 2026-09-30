@@ -94,7 +94,7 @@ function feed(chunks) {
 test('exports are the protocol constants and pure helpers', () => {
   assert.deepEqual(Object.keys(protocol).sort(), [
     'FRESH_MS', 'HOST', 'MAX_FRAME', 'MAX_PNG', 'MAX_TEXT', 'PORT', 'VERSION',
-    'assertFresh', 'classifyText', 'createCode', 'encodeFrame', 'pushBytes', 'rememberEvent', 'validateMessage',
+    'assertFresh', 'classifyText', 'createCode', 'encodeFrame', 'pushBytes', 'rememberEvent', 'validateMessage', 'validateOwnerBootstrap',
   ]);
   assert.equal(PORT, 47635);
   assert.equal(HOST, '127.0.0.1');

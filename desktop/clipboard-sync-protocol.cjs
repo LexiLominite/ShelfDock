@@ -109,6 +109,14 @@ function validateMessage(message) {
       requireUuid(message.deviceId);
       requireToken(message.token);
       return message;
+    case 'owner-pair':
+      if (Object.keys(message).sort().join(',') !== 'capability,deviceId,direction,label,receiverDeviceId,type,v') fail(MESSAGE_MALFORMED);
+      requireToken(message.capability);
+      requireUuid(message.receiverDeviceId);
+      requireUuid(message.deviceId);
+      requireLabel(message.label);
+      requireDirection(message.direction);
+      return message;
     case 'pair':
       requireCode(message.code);
       requireUuid(message.deviceId);
@@ -134,6 +142,13 @@ function validateMessage(message) {
     default:
       fail(MESSAGE_MALFORMED);
   }
+}
+
+function validateOwnerBootstrap(value, now = Date.now()) {
+  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'capability,deviceId,expiresAt,type,v' || value.v !== VERSION || value.type !== 'owner-bootstrap') fail(MESSAGE_MALFORMED);
+  requireUuid(value.deviceId); requireToken(value.capability);
+  if (!Number.isSafeInteger(value.expiresAt) || value.expiresAt <= now || value.expiresAt > now + FRESH_MS + FUTURE_MS) fail(NOT_FRESH);
+  return value;
 }
 
 function encodeFrame(message) {
@@ -272,4 +287,5 @@ module.exports = {
   assertFresh,
   rememberEvent,
   validateMessage,
+  validateOwnerBootstrap,
 };

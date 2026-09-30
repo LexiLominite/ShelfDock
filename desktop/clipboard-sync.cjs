@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const protocol = require('./clipboard-sync-protocol.cjs');
-const { safeTarget } = require('./clipboard-sync-ssh.cjs');
+const { safeTarget, readOwnerBootstrap: defaultReadOwnerBootstrap } = require('./clipboard-sync-ssh.cjs');
 
 const STORAGE_MESSAGE = 'A secure system secret store is required for clipboard sync.';
 const UNREACHABLE = 'ShelfDock on that computer is not ready for clipboard sync. Open it there and enable sync.';
@@ -18,14 +18,20 @@ const inverse = direction => direction === 'send' ? 'receive' : direction === 'r
 const localName = () => os.hostname().replace(/[^\w .()-]/g, '').trim().slice(0, 80) || 'This computer';
 
 class ClipboardSync {
-  constructor({ dataDir, safeStorage, connect = () => { throw new Error(UNREACHABLE); }, now = Date.now, onChange = () => {}, onItem = () => {}, isBlocked = () => false, platform = process.platform, port = protocol.PORT } = {}) {
+  constructor({ dataDir, safeStorage, connect = () => { throw new Error(UNREACHABLE); }, now = Date.now, onChange = () => {}, onItem = () => {}, isBlocked = () => false, isLinkBlocked = isBlocked, platform = process.platform, port = protocol.PORT, readOwnerBootstrap = defaultReadOwnerBootstrap } = {}) {
     this.directory = path.join(dataDir, 'clipboard-sync');
+    this.ownerDirectory = path.join(this.directory, 'owner');
+    this.ownerBootstrap = null;
+    this.ownerWrites = Promise.resolve();
+    this.ownerRequests = new Set();
+    this.readOwnerBootstrap = readOwnerBootstrap;
     this.safeStorage = safeStorage;
     this.connect = connect;
     this.now = now;
     this.onChange = onChange;
     this.onItem = onItem;
     this.isBlocked = isBlocked;
+    this.isLinkBlocked = isLinkBlocked;
     this.platform = platform;
     this.requestedPort = port;
     this.settings = { enabled: false, paused: false, receiveMode: 'history', deviceId: crypto.randomUUID() };
@@ -55,6 +61,7 @@ class ClipboardSync {
   active() { return !this.closed && this.settings.enabled && !this.settings.paused && this.available(); }
   blocked() { try { return this.isBlocked() === true; } catch { return true; } }
   canSend() { return this.active() && !this.blocked(); }
+  canLink() { try { return this.active() && this.isLinkBlocked() !== true; } catch { return false; } }
   state() {
     const pairing = this.pairing && this.pairing.expiresAt > this.now() ? { code: this.pairing.code, expiresAt: new Date(this.pairing.expiresAt).toISOString() } : null;
     return {
@@ -71,6 +78,7 @@ class ClipboardSync {
 
   async load() {
     await fs.mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await this.refreshOwnerBootstrap();
     try {
       const settings = JSON.parse(await fs.readFile(path.join(this.directory, 'settings.json'), 'utf8'));
       if (UUID.test(settings?.deviceId)) this.settings.deviceId = settings.deviceId;
@@ -119,6 +127,43 @@ class ClipboardSync {
     this.noteError(message + ' Clipboard sync is off.' + warning);
   }
 
+  // Serialized atomic publication prevents stale in-flight writes from restoring
+  // a capability after a pause/disable. No capability reaches state() or logs.
+  refreshOwnerBootstrap(rotate = false) {
+    const operation = this.ownerWrites.catch(() => {}).then(async () => {
+      const file = path.join(this.ownerDirectory, 'bootstrap.json');
+      if (!this.canLink() || !this.server) {
+        this.ownerBootstrap = null;
+        let info; try { info = await fs.lstat(this.ownerDirectory); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+        if (!info.isDirectory() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())) throw new Error('Clipboard linking requires a private owner directory.');
+        await fs.rm(file, { force: true }); return;
+      }
+      if (!rotate && this.ownerBootstrap?.expiresAt > this.now() + protocol.FRESH_MS / 2) return;
+      this.ownerBootstrap = null;
+      await fs.mkdir(this.ownerDirectory, { recursive: true, mode: 0o700 });
+      const info = await fs.lstat(this.ownerDirectory);
+      if (!info.isDirectory() || info.isSymbolicLink() || (typeof process.getuid === 'function' && info.uid !== process.getuid())) throw new Error('Clipboard linking requires a private owner directory.');
+      await fs.chmod(this.ownerDirectory, 0o700);
+      if (this.platform === 'win32' && process.platform === 'win32') {
+        // Windows chmod does not establish privacy. Restrict the directory DACL
+        // to this process's user SID; descendants inherit that private ACL.
+        const { execFile } = require('node:child_process');
+        const script = "$ErrorActionPreference='Stop'; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetOwner($sid); $acl.SetAccessRuleProtection($true,$false); $rule=New-Object Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow'); $acl.AddAccessRule($rule); Set-Acl -LiteralPath $env:SHELFDock_OWNER_DIR -AclObject $acl";
+        await new Promise((resolve, reject) => execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { timeout: 5000, maxBuffer: 2048, env: { ...process.env, SHELFDock_OWNER_DIR: this.ownerDirectory } }, error => error ? reject(new Error('Clipboard linking requires a private owner directory.')) : resolve()));
+      }
+      const bootstrap = { v: 1, type: 'owner-bootstrap', deviceId: this.settings.deviceId, capability: crypto.randomBytes(32).toString('hex'), expiresAt: this.now() + protocol.FRESH_MS };
+      const temp = path.join(this.ownerDirectory, `${crypto.randomUUID()}.tmp`);
+      try {
+        await fs.writeFile(temp, JSON.stringify(bootstrap), { mode: 0o600, flag: 'wx' });
+        if (!this.canLink() || !this.server) { await fs.rm(file, { force: true }); return; }
+        await fs.rename(temp, file);
+        this.ownerBootstrap = bootstrap;
+      } finally { await fs.rm(temp, { force: true }); }
+    });
+    this.ownerWrites = operation;
+    return operation;
+  }
+  cancelOwnerRequests() { for (const controller of this.ownerRequests) controller.abort(); this.ownerRequests.clear(); }
   async listen() {
     if (this.server) return;
     const server = net.createServer(socket => this.accept(socket));
@@ -143,11 +188,14 @@ class ClipboardSync {
   }
   dropSocket(peer) { const socket = peer?.socket; if (peer) peer.socket = null; if (socket && !socket.destroyed) socket.destroy(); }
   async closeListener() {
+    this.cancelOwnerRequests();
+    this.ownerBootstrap = null;
     clearInterval(this.retryTimer); this.retryTimer = null;
     const server = this.server; this.server = null; this.port = null;
     for (const peer of this.peers) this.dropSocket(peer);
     for (const socket of this.sockets) socket.destroy();
     if (server) await new Promise(resolve => server.close(resolve));
+    await this.refreshOwnerBootstrap();
   }
   startRetry() {
     if (this.retryTimer) return;
@@ -155,6 +203,7 @@ class ClipboardSync {
     this.retryTimer.unref?.();
   }
   async retry() {
+    try { await this.refreshOwnerBootstrap(); } catch { this.noteError('Clipboard linking is unavailable because its private capability could not be saved.'); }
     if (!this.canSend()) return;
     for (const peer of this.peers) {
       if (peer.paused || peer.retryAt > this.now()) continue;
@@ -177,12 +226,14 @@ class ClipboardSync {
       this.noteError('Clipboard sync is off for this session. Its preference could not be saved; check it after restarting.');
       throw new Error(this.error);
     }
+    await this.refreshOwnerBootstrap(true);
     this.emit();
   }
   async setPaused(paused) {
     await this.ready;
     if (typeof paused !== 'boolean') throw new Error('Choose a paused state.');
-    this.settings.paused = paused; this.epoch += 1;
+    this.settings.paused = paused; this.epoch += 1; this.cancelOwnerRequests();
+    await this.refreshOwnerBootstrap(true);
     if (paused) { this.pending.clear(); this.pairing = null; for (const socket of this.sockets) socket.destroy(); for (const peer of this.peers) this.dropSocket(peer); }
     try { await this.saveSettings(); }
     catch {
@@ -192,6 +243,7 @@ class ClipboardSync {
       this.noteError('Clipboard sync is paused for this session. Its preference could not be saved; check it after restarting.');
       throw new Error(this.error);
     }
+    await this.refreshOwnerBootstrap(true);
     this.emit();
   }
   async setReceiveMode(mode) {
@@ -208,27 +260,46 @@ class ClipboardSync {
     this.error = ''; this.emit();
     return { code: this.pairing.code, expiresAt: new Date(this.pairing.expiresAt).toISOString() };
   }
-  async pairWith({ hostLabel, code, direction = 'both', sshTarget, localLabel = localName() } = {}) {
+  async pairOwnedWith({ hostLabel, direction = 'both', sshTarget, localLabel = localName() } = {}) {
+    await this.ready; this.requireStorage(); this.requireActive();
+    if (!this.canLink()) throw new Error('Enable and resume Clipboard tools before linking a computer.');
+    // Validate all caller fields before touching the SSH transport.
+    const target = safeTarget(sshTarget);
+    protocol.validateMessage({ v: 1, type: 'owner-pair', capability: '0'.repeat(64), receiverDeviceId: crypto.randomUUID(), deviceId: this.settings.deviceId, label: localLabel, direction });
+    if (typeof hostLabel !== 'string' || hostLabel.length < 1 || hostLabel.length > 80 || /[\x00-\x1f\x7f]/.test(hostLabel)) throw new Error('Choose a saved machine.');
+    const epoch = this.epoch, controller = new AbortController(); this.ownerRequests.add(controller);
+    try {
+      const bootstrap = protocol.validateOwnerBootstrap(await this.readOwnerBootstrap(target, { signal: controller.signal, now: this.now }), this.now());
+      if (controller.signal.aborted || !this.canLink() || epoch !== this.epoch) throw new Error('Clipboard linking was cancelled.');
+      if (this.peers.some(peer => peer.id === bootstrap.deviceId && peer.paused)) throw new Error('Resume or remove the existing clipboard link first.');
+      return await this.pairWith({ hostLabel, direction, sshTarget: target, localLabel, ownerBootstrap: bootstrap, ownerEpoch: epoch });
+    } finally { this.ownerRequests.delete(controller); }
+  }
+  async pairWith({ hostLabel, code, direction = 'both', sshTarget, localLabel = localName(), ownerBootstrap, ownerEpoch } = {}) {
     await this.ready; this.requireStorage(); this.requireActive();
     const epoch = this.epoch;
+    if (ownerBootstrap && (ownerEpoch !== epoch || !this.canLink())) throw new Error('Clipboard linking was cancelled.');
     const message = { v: 1, type: 'pair', code: String(code || '').trim().toUpperCase(), deviceId: this.settings.deviceId, label: localLabel, direction };
+    if (ownerBootstrap) { message.type = 'owner-pair'; delete message.code; message.capability = ownerBootstrap.capability; message.receiverDeviceId = ownerBootstrap.deviceId; }
     protocol.validateMessage(message);
     const peer = { id: crypto.randomUUID(), label: String(hostLabel || 'Paired computer').slice(0, 80), hostLabel: String(hostLabel || 'Paired computer').slice(0, 80), direction, paused: false, sshTarget: safeTarget(sshTarget), token: '', socket: null };
     const socket = await this.open(peer);
     let previous, saved = false;
     try {
+      if (ownerBootstrap && (!this.canLink() || epoch !== this.epoch)) throw new Error('Clipboard linking was cancelled.');
       const reply = await this.exchange(socket, message);
-      if (reply.type !== 'pair-ok' || reply.deviceId === this.settings.deviceId || reply.direction !== inverse(direction)) throw new Error('That computer did not accept clipboard pairing.');
-      if (!this.active() || epoch !== this.epoch) throw new Error('Clipboard sync was paused or disabled.');
+      if (reply.type !== 'pair-ok' || (ownerBootstrap && reply.deviceId !== ownerBootstrap.deviceId) || reply.deviceId === this.settings.deviceId || reply.direction !== inverse(direction)) throw new Error('That computer did not accept clipboard pairing.');
+      if (!this.active() || (ownerBootstrap && !this.canLink()) || epoch !== this.epoch) throw new Error('Clipboard sync was paused or disabled.');
       peer.id = reply.deviceId; peer.remoteDeviceId = reply.deviceId; peer.token = reply.token; peer.socket = socket;
       previous = this.peers.find(item => item.id === peer.id);
+      if (ownerBootstrap && previous?.paused) throw new Error('Resume or remove the existing clipboard link first.');
       if (!previous && this.peers.length >= 32) throw new Error('Pair at most 32 computers.');
       this.peers = this.peers.filter(item => item.id !== peer.id); this.peers.push(peer);
       await this.savePeers();
       saved = true;
-      if (!this.active() || epoch !== this.epoch || !this.peers.includes(peer)) throw new Error('Clipboard sync was paused or disabled.');
+      if (!this.active() || (ownerBootstrap && !this.canLink()) || epoch !== this.epoch || !this.peers.includes(peer)) throw new Error('Clipboard sync was paused or disabled.');
       this.dropSocket(previous); this.attach(socket, peer); this.error = ''; this.emit();
-      return this.state();
+      return ownerBootstrap ? { ...this.state(), linkedPeerId: peer.id } : this.state();
     } catch (error) {
       if (this.peers.includes(peer)) {
         this.peers = this.peers.filter(item => item !== peer);
@@ -247,11 +318,13 @@ class ClipboardSync {
     if (!peer) throw new Error('That computer is no longer paired.');
     if (direction !== undefined && !['send', 'receive', 'both'].includes(direction)) throw new Error('Choose send, receive, or both directions.');
     if (paused !== undefined && typeof paused !== 'boolean') throw new Error('Choose a paused state.');
+    this.epoch += 1; this.cancelOwnerRequests(); this.ownerBootstrap = null;
     const previous = { direction: peer.direction, paused: peer.paused };
     if (direction !== undefined) peer.direction = direction;
     if (paused !== undefined) peer.paused = paused;
     this.pending.delete(peer.id);
     if (peer.paused) this.dropSocket(peer);
+    try { await this.refreshOwnerBootstrap(true); } catch { this.noteError('Clipboard linking is unavailable because its private capability could not be saved.'); }
     try { await this.savePeers(); }
     catch {
       peer.direction = previous.direction; peer.paused = true; this.dropSocket(peer);
@@ -268,9 +341,11 @@ class ClipboardSync {
     return this.state();
   }
   async removePeer(peer) {
+    this.epoch += 1; this.cancelOwnerRequests(); this.ownerBootstrap = null;
     const socket = peer.socket;
     peer.paused = true; this.pending.delete(peer.id); this.rates.delete(peer.id);
     this.peers = this.peers.filter(item => item !== peer);
+    try { await this.refreshOwnerBootstrap(true); } catch { this.noteError('Clipboard linking is unavailable because its private capability could not be saved.'); }
     try { await this.savePeers(); }
     catch {
       if (!this.peers.some(item => item.id === peer.id)) this.peers.push(peer);
@@ -401,7 +476,7 @@ class ClipboardSync {
   }
   async receive(socket, peer, message) {
     if (!this.active()) { this.reject(socket, 'paused'); return peer; }
-    if (!peer && message.type === 'pair') return this.acceptPair(socket, message);
+    if (!peer && ['pair', 'owner-pair'].includes(message.type)) return this.acceptPair(socket, message);
     if (!peer && message.type === 'hello') {
       const matched = this.peers.find(item => item.id === message.deviceId && tokenEquals(item.token, message.token));
       if (!matched || matched.paused) { this.reject(socket, 'auth'); return null; }
@@ -424,10 +499,13 @@ class ClipboardSync {
     this.reject(socket, 'malformed'); return peer;
   }
   async acceptPair(socket, message) {
-    if (!this.active() || !this.pairing || this.pairing.expiresAt <= this.now() || !this.allowRate('pairing') || !tokenEquals(this.pairing.code, message.code) || message.deviceId === this.settings.deviceId) { this.reject(socket, 'auth'); return null; }
-    // Consume before awaiting persistence so one code authorizes exactly one pairing.
-    this.pairing = null;
     const epoch = this.epoch;
+    const owned = message.type === 'owner-pair';
+    const authority = owned ? this.ownerBootstrap : this.pairing;
+    if (!this.active() || (owned && (!this.canLink() || message.receiverDeviceId !== this.settings.deviceId || this.peers.some(peer => peer.id === message.deviceId && peer.paused))) || !authority || authority.expiresAt <= this.now() || !this.allowRate('pairing') || !tokenEquals(owned ? authority.capability : authority.code, owned ? message.capability : message.code) || message.deviceId === this.settings.deviceId) { this.reject(socket, 'auth'); return null; }
+    // Consume before awaiting persistence so one code authorizes exactly one pairing.
+    if (owned) { this.ownerBootstrap = null; await this.refreshOwnerBootstrap(true); } else this.pairing = null;
+    if (!this.active() || epoch !== this.epoch || (owned && !this.canLink()) || socket.destroyed) { this.reject(socket, 'auth'); return null; }
     const previous = this.peers.find(item => item.id === message.deviceId);
     if (!previous && this.peers.length >= 32) { this.reject(socket, 'size'); return null; }
     const peer = { id: message.deviceId, remoteDeviceId: message.deviceId, label: message.label, hostLabel: message.label, direction: inverse(message.direction), paused: false, token: crypto.randomBytes(32).toString('hex'), socket, sshTarget: null };
@@ -436,7 +514,7 @@ class ClipboardSync {
     try {
       await this.savePeers();
       saved = true;
-      if (!this.active() || epoch !== this.epoch || socket.destroyed || !this.peers.includes(peer)) throw new Error('Paused');
+      if (!this.active() || (owned && !this.canLink()) || epoch !== this.epoch || socket.destroyed || !this.peers.includes(peer)) throw new Error('Paused');
       socket.write(protocol.encodeFrame({ v: 1, type: 'pair-ok', deviceId: this.settings.deviceId, label: localName(), token: peer.token, direction: peer.direction }));
       this.dropSocket(previous); this.error = ''; this.emit(); return peer;
     } catch {
