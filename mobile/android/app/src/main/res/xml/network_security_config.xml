@@ -1,0 +1,6 @@
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true"><trust-anchors><certificates src="system" /></trust-anchors></base-config>
+    <!-- Android cannot express CIDR allowlists. Every connection is gated by UrlPolicy, which permits HTTP only to literal loopback or 100.64/10 peers. HTTPS retains system trust. -->
+    <domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">localhost</domain><domain includeSubdomains="false">127.0.0.1</domain><domain includeSubdomains="false">::1</domain></domain-config>
+    <debug-overrides><trust-anchors><certificates src="system" /></trust-anchors></debug-overrides>
+</network-security-config>
