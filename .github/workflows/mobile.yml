@@ -1,0 +1,54 @@
+name: LexBridge mobile checks
+
+on:
+  pull_request:
+    paths: ['mobile/**', '.github/workflows/mobile.yml']
+  push:
+    branches: [main]
+    paths: ['mobile/**', '.github/workflows/mobile.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bridge-and-integrations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test bridge and isolated HTTP interoperability fixture
+        run: node --test mobile/bridge/test.cjs mobile/bridge/interop-test.cjs
+      - name: Test Python integrations
+        run: python -m unittest discover -s mobile/integrations/tests -v
+      - name: Test mocked macOS installer and actions
+        run: python -m unittest discover -s mobile/tools/tests -v
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mobile/android
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install required Android SDK packages
+        run: |
+          "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            'platforms;android-36' 'build-tools;35.0.0'
+      - name: Run Android unit tests, lint, and debug build
+        run: bash ./gradlew --no-daemon --console=plain testDebugUnitTest lintDebug assembleDebug

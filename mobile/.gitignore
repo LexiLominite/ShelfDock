@@ -1,0 +1,12 @@
+android/.gradle/
+android/**/build/
+android/local.properties
+**/__pycache__/
+*.apk
+*.p12
+*.jks
+*signing*.properties
+agent.json
+config.json
+state.json
+pairing-*.json

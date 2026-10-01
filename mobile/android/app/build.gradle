@@ -1,0 +1,14 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'app.lexbridge'
+    compileSdk 36
+    defaultConfig { applicationId 'com.lexilominite.lexbridge'; minSdk 29; targetSdk 36; versionCode 1; versionName '0.1.0'; testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner' }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    def signingFile = System.getenv('LEXBRIDGE_SIGNING_PROPERTIES')
+    if (signingFile) {
+        def secrets = new Properties(); file(signingFile).withInputStream { secrets.load(it) }
+        signingConfigs { release { storeFile file(secrets['storeFile']); storePassword secrets['storePassword']; keyAlias secrets['keyAlias']; keyPassword secrets['keyPassword'] } }
+        buildTypes { release { signingConfig signingConfigs.release; minifyEnabled false } }
+    }
+}
+dependencies { testImplementation 'junit:junit:4.13.2'; androidTestImplementation 'androidx.test:runner:1.6.2'; androidTestImplementation 'androidx.test.ext:junit:1.2.1' }

@@ -1,0 +1,6 @@
+plugins { id 'com.android.application' version '8.11.1' apply false }
+
+def externalRoot = System.getenv('LEXBRIDGE_ANDROID_BUILD_ROOT')
+if (externalRoot) {
+    allprojects { p -> p.layout.buildDirectory.set(file(externalRoot + '/' + (p == rootProject ? 'root' : p.name))) }
+}
